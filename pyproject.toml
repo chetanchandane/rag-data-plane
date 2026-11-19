@@ -1,0 +1,64 @@
+[project]
+name = "rag-data-plane"
+version = "0.1.0"
+description = "Data plane for rag-control-plane: RAG ingestion and retrieval API on AWS"
+requires-python = ">=3.12,<3.13"
+# Runtime dependencies are added in the step that first needs them.
+dependencies = [
+    "asyncpg>=0.32.0",
+    "boto3>=1.44.5",
+    "pgvector>=0.5.1",
+    "pydantic>=2.14.3",
+    "pymupdf>=1.28.2,<2",
+]
+
+# No [build-system]: uv treats this as an application, not an installable package.
+# Code under services/ is imported as top-level packages (api, worker, shared).
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# Tells the import sorter that api/worker/shared are first-party packages.
+src = ["services", "tests"]
+
+[tool.ruff.format]
+# Ruff also formats Python blocks inside Markdown; keep it away from docs/SPEC.md.
+exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # import sorting
+    "UP", # pyupgrade (modern Python syntax)
+    "B",  # bugbear (likely bugs)
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Makes `import shared` etc. work in tests without installing the project.
+pythonpath = ["services"]
+# Plain `uv run pytest` runs unit tests only. A later `-m db` on the command line
+# overrides this, because pytest uses the last -m it sees.
+addopts = "-m 'not db and not paid'"
+markers = [
+    "db: needs the Neon dev branch (DATABASE_URL_* in .env)",
+    "paid: calls a paid API (Bedrock, Cohere, LLM); opt-in only",
+]
+# async def tests run without needing @pytest.mark.asyncio on each one.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# PyMuPDF's SWIG bindings trigger these on import under Python 3.12; not our code.
+filterwarnings = ["ignore:builtin type .* has no __module__ attribute:DeprecationWarning"]
+
+[dependency-groups]
+dev = [
+    "alembic>=1.20.1",
+    "botocore[crt]>=1.44.5",
+    "psycopg[binary]>=3.3.9",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "python-dotenv>=1.2.4",
+    "ruff>=0.17.5",
+]
