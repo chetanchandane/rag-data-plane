@@ -158,12 +158,47 @@ _ENV = {
 }
 
 
-def test_settings_read_from_the_environment(monkeypatch):
-    for name, value in _ENV.items():
+class FakeSsm:
+    def __init__(self):
+        self.calls = []
+
+    def get_parameter(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"Parameter": {"Value": "postgresql://app_api@from-ssm/db"}}
+
+
+def _set_env(monkeypatch, env):
+    monkeypatch.delenv("DATABASE_URL_API_PARAM", raising=False)
+    for name, value in env.items():
         monkeypatch.setenv(name, value)
-    settings = Settings.from_env()
+
+
+def test_settings_read_from_the_environment(monkeypatch):
+    _set_env(monkeypatch, _ENV)
+    ssm = FakeSsm()
+    settings = Settings.from_env(ssm=ssm)
+    assert settings.database_url == _ENV["DATABASE_URL_API"]
+    assert ssm.calls == []  # a URL in the environment never touches SSM
     assert settings.dev_tenant_id == TENANT
     assert settings.dev_role_level == 2
+
+
+def test_the_database_url_can_come_from_ssm(monkeypatch):
+    _set_env(monkeypatch, _ENV | {"DATABASE_URL_API": ""})
+    monkeypatch.setenv("DATABASE_URL_API_PARAM", "/ragdp/prod/database_url_api")
+    ssm = FakeSsm()
+    settings = Settings.from_env(ssm=ssm)
+    assert settings.database_url == "postgresql://app_api@from-ssm/db"
+    assert ssm.calls == [{"Name": "/ragdp/prod/database_url_api", "WithDecryption": True}]
+
+
+@pytest.mark.parametrize("param", ["", "/ragdp/prod/database_url_api"], ids=["neither", "both"])
+def test_settings_need_exactly_one_database_url_source(monkeypatch, param):
+    url = "" if param == "" else _ENV["DATABASE_URL_API"]
+    _set_env(monkeypatch, _ENV | {"DATABASE_URL_API": url})
+    monkeypatch.setenv("DATABASE_URL_API_PARAM", param)
+    with pytest.raises(RuntimeError, match="exactly one"):
+        Settings.from_env(ssm=FakeSsm())
 
 
 @pytest.mark.parametrize(
@@ -171,7 +206,6 @@ def test_settings_read_from_the_environment(monkeypatch):
     [("DEV_AUTH_TOKEN", ""), ("DEV_AUTH_TOKEN", "  "), ("DEV_ROLE_LEVEL", "4")],
 )
 def test_settings_fail_at_startup_when_auth_is_misconfigured(monkeypatch, name, value):
-    for env_name, env_value in (_ENV | {name: value}).items():
-        monkeypatch.setenv(env_name, env_value)
+    _set_env(monkeypatch, _ENV | {name: value})
     with pytest.raises((RuntimeError, ValueError)):
-        Settings.from_env()
+        Settings.from_env(ssm=FakeSsm())

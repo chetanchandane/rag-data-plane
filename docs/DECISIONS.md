@@ -8,6 +8,15 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
 - **Why:** step 10's "done when" is every Slice 1 box, and three of them need work no earlier step built: a deploy workflow ("a push to `main` deploys through OIDC"), CI migrations ("migrated on Neon by CI") and telemetry ("traces show parse, chunk and embed spans"). Moving them to Slice 2 was considered and rejected: they are what makes Slice 1 worth posting.
 - **Checked while planning:** whether the endpoint used as "the dev branch" since 2026-11-17 was really `main`'s. It wasn't. The project has a `dev` child branch (`ep-sparkling-heart-bdl5i7aa`), and `main` has its own endpoint (`ep-wandering-math-bdgo4xwq`). Every DB test ran on `dev`.
 
+## 2026-11-19: Step 10b end-to-end run
+
+- **The API runs on the laptop for Slice 1** (`python -m api.local`), on `127.0.0.1` only, because the auth stub is one shared token. `uvicorn` is a dev dependency for it; the API Lambda (Mangum) comes in Slice 2.
+- **The API's DB URL comes from exactly one source:** `DATABASE_URL_API` (a URL, for dev) or `DATABASE_URL_API_PARAM` (an SSM name, for production; read once at startup, kept in memory). Both or neither stops startup. `api.local`'s `--database-url-param` and `--bucket` flags override `.env`, so a production run can't fall back to the dev branch.
+- **Presigned URLs are signed with the `aws login` session,** so they also stop working when that session ends.
+- **The run is a runbook,** `docs/runbooks/slice1-e2e.md`, with its results recorded under "Results". First run 2026-11-19 on image `ef63fa3`: all four boxes passed, and the 20-page PDF was `indexed` 16 s after upload.
+- **The 20-page PDF is the first 20 pages of NIST SP 800-207** (`samples/README.md` has the command), so no new download or license question.
+- **The run's data stays in production** (one test tenant, two documents, their S3 objects) until there's a delete path (Slice 2). The DLQ is purged after the alarm is seen, so the alarm can fire again.
+
 ## 2026-11-19: Step 10a production database and first deploy
 
 - **Production is Neon's default branch `main`** (endpoint `ep-wandering-math-bdgo4xwq`); dev tests stay on the `dev` branch.

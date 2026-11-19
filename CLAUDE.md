@@ -113,7 +113,7 @@ Work these in order. Each one is a separate session or prompt. Tick them off her
   *Done when:* every Slice 1 box in SPEC: Slices is ticked.
   - [x] **10a. Production database and first deploy.** Neon's `main` branch becomes production (dev tests stay on the `dev` branch): roles, migrations and role passwords that exist only in SSM (`db/bootstrap.py --production`). Then the first deploy in `infra/envs/prod/README.md`.
     *Done when:* the DB suite passes on the `dev` branch, the prod `plan` shows no changes after Chetan's apply, and the alert email is confirmed.
-  - [ ] **10b. End-to-end run, by hand.** API served locally (reads its DB URL from SSM). Register, upload with `curl`, wrong checksum rejected by S3, a 20-page PDF reaches `indexed` via `GET`, duplicate upload and duplicate message, corrupt PDF reaches the DLQ and the alarm fires. Commands written up as a runbook.
+  - [x] **10b. End-to-end run, by hand.** API served locally (reads its DB URL from SSM). Register, upload with `curl`, wrong checksum rejected by S3, a 20-page PDF reaches `indexed` via `GET`, duplicate upload and duplicate message, corrupt PDF reaches the DLQ and the alarm fires. Commands written up as a runbook.
     *Done when:* those Slice 1 boxes are ticked.
   - [ ] **10c. CI.** `ci.yml`: lint, unit tests, DB tests on a Neon branch; migrations on production as `app_owner`.
     *Done when:* a CI run passes and production's migrations are applied by CI.

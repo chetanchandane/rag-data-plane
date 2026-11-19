@@ -640,10 +640,10 @@ Four slices, about 10 to 12 focused days in total. Each one ends deployed, with 
 
 - [ ] `bootstrap` applied; a push to `main` deploys through OIDC
 - [ ] Schema, roles and RLS policies migrated on Neon by CI
-- [ ] `POST /v1/documents` returns a presigned URL; an upload with the wrong checksum is rejected by S3
-- [ ] A 20-page PDF goes from upload to `indexed`, visible via `GET /v1/documents/{id}`
-- [ ] Duplicate upload creates no new version; duplicate message creates no duplicate chunks
-- [ ] Corrupt PDF ends in the DLQ with status `failed`, and the alarm fires
+- [x] `POST /v1/documents` returns a presigned URL; an upload with the wrong checksum is rejected by S3
+- [x] A 20-page PDF goes from upload to `indexed`, visible via `GET /v1/documents/{id}`
+- [x] Duplicate upload creates no new version; duplicate message creates no duplicate chunks
+- [x] Corrupt PDF ends in the DLQ with status `failed`, and the alarm fires
 - [ ] Traces show parse, chunk and embed spans with durations
 
 Post: the ingestion design, the idempotency approach and the real monthly AWS bill.
