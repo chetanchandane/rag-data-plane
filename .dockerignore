@@ -1,0 +1,8 @@
+# The build context is the repo root. Send only what images copy; never secrets or data.
+*
+!pyproject.toml
+!uv.lock
+!services/shared/
+!services/worker/
+!services/api/
+**/__pycache__

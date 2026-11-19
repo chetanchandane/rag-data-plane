@@ -377,7 +377,7 @@ Errors are permanent or transient. Anything not listed as permanent is transient
 | `maxReceiveCount` | 3 | Transient errors only; then the DLQ. Permanent errors go to the DLQ on the first attempt |
 | DLQ retention | 14 days | Time to inspect and redrive |
 | Batch size | 1 | One document per invocation isolates failures |
-| Reserved concurrency | 2 | Protects Neon connections and embedding rate limits |
+| Worker concurrency | At most 2: the SQS trigger's `maximum_concurrency`, no reserved concurrency (DECISIONS 2026-11-19) | Protects Neon connections and embedding rate limits, and never locks other functions out of the account's concurrency limit |
 | Memory | 2048 MB | Parsing is CPU-bound; Lambda CPU scales with memory |
 
 **Deletes**
@@ -503,9 +503,9 @@ infra/
     main.tf               # state bucket (S3 native locking), GitHub OIDC provider, deploy role
   modules/
     storage/              # raw bucket: public access blocked, SSE-S3, CORS for presigned PUT,
-                          # EventBridge notifications on, lifecycle for superseded objects
+                          # EventBridge notifications on (lifecycle for superseded objects: deferred, DECISIONS 2026-11-19)
     ingest/               # EventBridge rule + input transformer, SQS + DLQ, ECR repo,
-                          # worker Lambda (image), event source mapping, reserved concurrency
+                          # worker Lambda (image), event source mapping, concurrency cap
     api/                  # API Lambda (image), HTTP API, routes, JWT authorizer, throttling, access logs
     secrets/              # SSM SecureString parameter names only; values set out of band
     observability/        # alarms (DLQ depth > 0, 5xx rate, p95, worker errors),

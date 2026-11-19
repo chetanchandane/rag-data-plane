@@ -2,6 +2,24 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-19: Step 8 ingest infrastructure choices
+
+- **Worker concurrency is capped by the SQS trigger, not reserved concurrency** (approved 2026-11-19; SPEC queue table updated). The worker never reserves concurrency, so it can't lock other functions out of the account's limit during test runs.
+  - **Why:** the account's Lambda concurrency limit is 10, and AWS keeps at least 10 unreserved, so no reservation is possible. `scaling_config.maximum_concurrency = 2` on the event source mapping caps the worker at 2. That still protects Neon and Bedrock. It's also safer than a reservation: the trigger stops polling instead of being throttled, so waiting messages don't use up their 3 receives.
+  - 2 is the lowest value AWS allows for `maximum_concurrency`, so ingest never uses more than 2 of the account's 10 concurrent executions. That leaves 8 for the API and test runs. The worker's Terraform has no reserved-concurrency setting at all.
+  - Load tests (Slice 4) will need more than 10. Ask AWS to raise the limit (Service Quotas, Lambda "Concurrent executions") before then.
+- **Secrets are names only.** `modules/secrets` defines the parameter names and ARNs. The SecureString parameters and their values are created out of band with the CLI (`infra/envs/prod/README.md`). No secret passes through Terraform or lands in its state, and the deploy role has no SSM access at all.
+- **The raw bucket is `ragdp-raw-prod-905418224080`,** not the SPEC example's `ragdp-raw-prod`, because bucket names are global.
+- **SQS handler (`services/worker/handler.py`):**
+  - One record per invocation. Permanent errors go to the DLQ with a `reason` message attribute, then return normally; anything else raises.
+  - An invalid message's reason says where validation failed, never the input.
+  - A job naming another bucket is permanent (`wrong_bucket`). `reindex` and `delete` jobs go to the DLQ as `unsupported_job_type` until Slice 2 adds the endpoints that produce them.
+  - The DB URL is read from SSM once per cold start. A fresh asyncpg pool is created per invocation, because connections held while Lambda freezes the container may be dead when it thaws.
+- **The worker image** is built on `public.ecr.aws/lambda/python:3.12` and installs runtime dependencies from `uv.lock` with `--require-hashes`. The ECR repository has immutable tags (the git SHA), scans on push and keeps the last 3 images.
+- **EventBridge rule:** `Object Created` in the raw bucket with key prefix `raw/`, then the SPEC's input transformer verbatim, then SQS. The queue policy accepts messages only from that rule (`aws:SourceArn`).
+- **Observability for Slice 1:** the DLQ alarm (any message, 1-minute period) to the SNS topic `ragdp-alerts` (email), plus the monthly budget `ragdp-monthly` ($30 limit, actual-spend alerts at $15 and $25). The alert email is kept out of the repo (`TF_VAR_alert_email`). The API alarms come in Slice 2.
+- **Deferred: lifecycle for superseded objects** (SPEC storage module; decided 2026-11-19). S3 lifecycle rules can't see which versions are superseded; it would need the worker to tag those objects. It isn't needed yet: the old PDFs cost almost nothing at this scale. Add it if storage cost or retention ever calls for it. Only an abort-incomplete-uploads rule exists for now.
+
 ## 2026-11-19: Step 7 bootstrap choices
 
 - **The deploy role is `ragdp-github-deploy`.** It trusts `repo:chetanchandane/rag-data-plane:environment:prod` exactly (SPEC: "Deploy identity"), with no wildcard, so branches, pull requests and forks can't assume it. Sessions last at most 1 hour.
