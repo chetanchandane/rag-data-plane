@@ -1,5 +1,7 @@
 # Ingest worker Lambda image. Build from the repo root, for Lambda's x86_64 architecture:
-#   docker build --platform linux/amd64 -f services/worker/Dockerfile -t ragdp-worker .
+#   docker build --platform linux/amd64 --provenance=false -f services/worker/Dockerfile -t ragdp-worker .
+# --provenance=false: otherwise buildx wraps the image in an index with an attestation
+# manifest, which Lambda refuses to deploy.
 
 # Stage 1: turn uv.lock into a pinned, hashed requirements file (runtime dependencies only).
 FROM ghcr.io/astral-sh/uv:0.11.29 AS uv

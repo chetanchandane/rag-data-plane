@@ -21,16 +21,15 @@ The Lambda needs an image in ECR, and the ECR repository is part of this stack. 
 1. **Create only the repository:** `terraform apply -var-file=prod.tfvars -var worker_image_tag=none -target=module.ingest.aws_ecr_repository.worker`.
 2. **Build and push the worker image** (Docker via OrbStack or Colima), tagged with the git SHA:
    ```bash
-   docker build --platform linux/amd64 -f services/worker/Dockerfile -t <repo_url>:<sha> .
+   docker build --platform linux/amd64 --provenance=false -f services/worker/Dockerfile -t <repo_url>:<sha> .
    aws ecr get-login-password --profile ragdp | docker login --username AWS --password-stdin <repo_url>
    docker push <repo_url>:<sha>
    ```
-3. **Create the database URL parameter**, outside Terraform so the secret never enters its state. It's the production `app_ingest` URL (pooled endpoint):
+3. **Set up the production database and its URL parameters**, outside Terraform so no secret enters its state. In your own terminal (it prompts, hidden, for the Neon owner URL of the production branch `main`, direct endpoint):
    ```bash
-   aws ssm put-parameter --profile ragdp --type SecureString \
-     --name /ragdp/prod/database_url_ingest --value "$(read -rs v; echo "$v")"
+   uv run python db/bootstrap.py --production --aws-account-id 905418224080
    ```
-   Paste the URL when prompted. It isn't echoed, and it doesn't stay in shell history.
+   It rotates the three role passwords, stores the role URLs as SecureStrings under `/ragdp/prod/` (`database_url_ingest` is the worker's), and runs the migrations. Nothing else keeps the passwords. Re-running it rotates them again; a worker that's running picks up the new URL at its next cold start.
 4. **Apply everything:** `terraform apply -var-file=prod.tfvars -var worker_image_tag=<sha>`.
 5. **Confirm the subscription email** AWS sends to `alert_email`. Alarms aren't delivered until you do.
 

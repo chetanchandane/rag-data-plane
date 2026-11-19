@@ -111,7 +111,7 @@ Work these in order. Each one is a separate session or prompt. Tick them off her
   *Done when:* endpoint tests pass, including the duplicate-upload case, a body carrying another tenant's `tenant_id` (the claims' tenant must be used), and a concurrency test: two simultaneous registrations of new content for the same document both succeed with distinct version numbers (see DECISIONS, "Concurrent version allocation").
 - [ ] **10. End to end.** Register, upload with `curl`, watch status reach `indexed`; upload a corrupt PDF and watch it reach the DLQ. Split into 10a to 10e (DECISIONS 2026-11-19, "Step 10 is split").
   *Done when:* every Slice 1 box in SPEC: Slices is ticked.
-  - [ ] **10a. Production database and first deploy.** Create a Neon `dev` branch from `main` and point `.env` at it. `main` becomes production: new role passwords that exist only in SSM (`db/bootstrap.py` production mode), tables emptied. Then the first deploy in `infra/envs/prod/README.md`.
+  - [x] **10a. Production database and first deploy.** Neon's `main` branch becomes production (dev tests stay on the `dev` branch): roles, migrations and role passwords that exist only in SSM (`db/bootstrap.py --production`). Then the first deploy in `infra/envs/prod/README.md`.
     *Done when:* the DB suite passes on the `dev` branch, the prod `plan` shows no changes after Chetan's apply, and the alert email is confirmed.
   - [ ] **10b. End-to-end run, by hand.** API served locally (reads its DB URL from SSM). Register, upload with `curl`, wrong checksum rejected by S3, a 20-page PDF reaches `indexed` via `GET`, duplicate upload and duplicate message, corrupt PDF reaches the DLQ and the alarm fires. Commands written up as a runbook.
     *Done when:* those Slice 1 boxes are ticked.

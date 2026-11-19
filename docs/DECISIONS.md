@@ -6,7 +6,21 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
 
 - **Decision** (approved 2026-11-19): step 10 becomes five steps, each with its own "done when" and commit: 10a production database and first deploy, 10b end-to-end run by hand, 10c CI, 10d deploys, 10e traces. Listed in `CLAUDE.md`.
 - **Why:** step 10's "done when" is every Slice 1 box, and three of them need work no earlier step built: a deploy workflow ("a push to `main` deploys through OIDC"), CI migrations ("migrated on Neon by CI") and telemetry ("traces show parse, chunk and embed spans"). Moving them to Slice 2 was considered and rejected: they are what makes Slice 1 worth posting.
-- **Found while planning:** the Neon project has only its default branch, `main`. The endpoint used as "the dev branch" since 2026-11-17 is therefore probably `main`'s, so bootstrap, migrations and every DB test ran there. No real data is at risk, but `main` can't become production as is: its role passwords are in `.env`, and step 5's local ingest left rows behind. 10a fixes it: create `dev` from `main`, move `.env` to it, then give `main` new passwords that exist only in SSM and empty its tables.
+- **Checked while planning:** whether the endpoint used as "the dev branch" since 2026-11-17 was really `main`'s. It wasn't. The project has a `dev` child branch (`ep-sparkling-heart-bdl5i7aa`), and `main` has its own endpoint (`ep-wandering-math-bdgo4xwq`). Every DB test ran on `dev`.
+
+## 2026-11-19: Step 10a production database and first deploy
+
+- **Production is Neon's default branch `main`** (endpoint `ep-wandering-math-bdgo4xwq`); dev tests stay on the `dev` branch.
+- **`db/bootstrap.py --production --aws-account-id <id>`** sets up production. It:
+  - takes the owner URL at a hidden prompt, never from `.env`;
+  - refuses the dev endpoint (the mirror of the dev-mode guard) and any other AWS account, then asks for the endpoint ID to be typed before changing anything;
+  - generates new passwords on every run (so a re-run is a rotation), and stores the three role URLs as SecureStrings in SSM before setting them on the roles, so a password is never set without being stored;
+  - runs `alembic upgrade head` with the owner URL set only in its own process.
+  - **Why:** the hard rule says production passwords live only in SSM. This keeps them out of `.env`, shell history, logs and Terraform state.
+- **SSM names:** `/ragdp/prod/database_url_{owner,api,ingest}`. All three names are defined in `infra/modules/secrets`, and a unit test checks that the script uses the same names. The owner URL is there for migrations; 10c decides how CI reads it.
+- **The worker image is built with `--provenance=false`.** Without it, buildx wraps the image in an index with an attestation manifest, which Lambda refuses to deploy. In ECR the image is a single Docker v2 manifest.
+- **The Lambda base image (Amazon Linux 2023) has `/etc/ssl/cert.pem`,** so production URLs use the same `sslrootcert` as dev (checked with `docker run`).
+- **First deploy done 2026-11-19,** in the order in `infra/envs/prod/README.md`: production bootstrap (migrations at 0003), the ECR repository alone, the image `ef63fa3` pushed, the full apply, the SNS email confirmed. The plan afterwards showed no changes.
 
 ## 2026-11-19: Step 9 registration endpoint choices
 
