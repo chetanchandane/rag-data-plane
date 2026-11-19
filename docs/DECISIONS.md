@@ -2,6 +2,25 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-19: Step 9 registration endpoint choices
+
+- **A duplicate whose version is still `pending_upload` gets a fresh upload URL** (approved 2026-11-19; SPEC upload flow updated). Any other status returns the existing version with `upload: null`.
+  - **Why:** a client that crashed or let its URL expire would otherwise have a version that can never be uploaded. Safe: the new URL is for the same key and requires the same checksum and size.
+  - Status codes: 201 for a new version, 200 for a duplicate (`"duplicate": true`).
+- **Versions are allocated under a row lock** (`SELECT ... FROM documents ... FOR UPDATE`), the second option in "Concurrent version allocation". The lock is held until COMMIT, so concurrent registrations for one document queue up instead of retrying. The presigned URL is signed after COMMIT to keep the lock short.
+  - Verified: with the lock removed, the 4-way concurrency test fails with `UniqueViolationError` on `document_versions_pkey`.
+- **One 409 for "hidden" and "different level"** (approved 2026-11-19). An `external_id` whose document is above the caller's role (RLS hides it) and one whose visible document has a different `min_role_level` get the same 409 body, so the caller learns neither whether a hidden document exists at a higher level nor what that level is.
+  - It does reveal that the `external_id` is taken. Avoiding that would need a `SECURITY DEFINER` function, which is more surface than this is worth.
+  - The level can't change through the API (column grant): chunks carry a copy of it.
+- **`min_role_level` above the caller's role is a 403** before any query, instead of RLS's WITH CHECK error surfacing as a 500.
+- **Upload limits** (approved 2026-11-19): at most 50 MiB (`MAX_UPLOAD_BYTES`), URLs valid for 15 minutes. The presigned PUT signs `x-amz-checksum-sha256` and `content-length`, so S3 rejects other bytes and other sizes.
+  - URLs use the Regional virtual-hosted endpoint (`<bucket>.s3.us-east-2.amazonaws.com`); the global endpoint can redirect for a new bucket, and an upload doesn't follow redirects.
+- **Request body:** unknown fields (such as `tenant_id` or `role_level`) are ignored, never read; tenant and role come only from `get_claims()`. Fields are strict (no `"2"` to 2, no `true` to 1). The hash is hex and lowercased, so one file has one spelling under `UNIQUE (doc_id, sha256)`.
+- **`filename` becomes the document's `title`** at creation. Later versions don't change it.
+- **`GET /v1/documents/{id}`** returns the document and every version, newest first (status, attempts, last error, chunk count). A document that's unknown, deleted, in another tenant or above the caller's role gets the same 404.
+- **Dependencies:** `fastapi` (runtime) and `httpx` (dev: async test client). Mangum and a local server come when the API runs somewhere (step 10 and Slice 2).
+- **Not handled yet:** a DB timeout returns 500, not the SPEC's 503 with `Retry-After` (Slice 3). Re-registering an older file's bytes returns that old (superseded) version, so the API can't roll a document back to earlier content; that belongs with Open decision #8 (reindex).
+
 ## 2026-11-19: Step 8 ingest infrastructure choices
 
 - **Worker concurrency is capped by the SQS trigger, not reserved concurrency** (approved 2026-11-19; SPEC queue table updated). The worker never reserves concurrency, so it can't lock other functions out of the account's limit during test runs.

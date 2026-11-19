@@ -107,7 +107,7 @@ Work these in order. Each one is a separate session or prompt. Tick them off her
   *Done when:* `plan` is clean. Chetan applies it himself.
 - [x] **8. Terraform storage + ingest.** S3 bucket, EventBridge rule + input transformer, SQS + DLQ, ECR repo, worker Lambda (image), event source mapping, DLQ alarm, Budget alerts. Thin SQS handler wrapping step 5's functions: permanent errors go straight to the DLQ with a reason, transient errors are raised for SQS to retry (SPEC: Ingestion, "Failure handling"). The worker role needs `sqs:SendMessage` on the DLQ.
   *Done when:* `plan` is clean and matches SPEC queue settings. Chetan applies it.
-- [ ] **9. API endpoints.** `POST /v1/documents` (register + presigned PUT requiring `x-amz-checksum-sha256`) and `GET /v1/documents/{id}`.
+- [x] **9. API endpoints.** `POST /v1/documents` (register + presigned PUT requiring `x-amz-checksum-sha256`) and `GET /v1/documents/{id}`.
   *Done when:* endpoint tests pass, including the duplicate-upload case, a body carrying another tenant's `tenant_id` (the claims' tenant must be used), and a concurrency test: two simultaneous registrations of new content for the same document both succeed with distinct version numbers (see DECISIONS, "Concurrent version allocation").
 - [ ] **10. End to end.** Register, upload with `curl`, watch status reach `indexed`; upload a corrupt PDF and watch it reach the DLQ.
   *Done when:* every Slice 1 box in SPEC: Slices is ticked.

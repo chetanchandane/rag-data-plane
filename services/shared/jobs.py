@@ -40,6 +40,14 @@ class S3KeyParts(NamedTuple):
     version: int
 
 
+def s3_key_for(tenant_id: UUID, doc_id: UUID, version: int) -> str:
+    """The raw-bucket key for one version. The API builds keys with this; the worker parses
+    them with parse_s3_key(), so the layout is defined in one place."""
+    key = f"raw/{tenant_id}/{doc_id}/v{version}/source.pdf"
+    parse_s3_key(key)  # never hand out a key the worker would reject
+    return key
+
+
 def parse_s3_key(key: str) -> S3KeyParts:
     """Parse a raw-bucket key. Raises ValueError if it doesn't match the layout exactly."""
     match = S3_KEY_PATTERN.fullmatch(key)

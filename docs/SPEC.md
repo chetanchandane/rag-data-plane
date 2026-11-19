@@ -42,7 +42,7 @@ The control plane decides **who** may do what; the data plane does the work and 
 **Upload flow**
 
 1. Client calls `POST /v1/documents` with `external_id`, `filename`, `content_sha256`, `size_bytes`, `min_role_level`.
-2. API verifies the JWT, then upserts the document and a version row (idempotent on `doc_id` + `sha256`). A duplicate returns the existing version and no upload URL.
+2. API verifies the JWT, then upserts the document and a version row (idempotent on `doc_id` + `sha256`). A duplicate returns the existing version, with a fresh upload URL only while that version is still `pending_upload` (DECISIONS 2026-11-19).
 3. API returns a presigned PUT that requires the `x-amz-checksum-sha256` header, so S3 rejects bytes that don't match the declared hash.
 4. Client uploads straight to S3. The API never handles file bytes.
 
@@ -579,7 +579,7 @@ Every claim in Scope maps to a test that runs in CI or a report committed to the
 - [x] No context set: `SELECT count(*) FROM chunks` returns 0.
 - [x] Tenant A, role 1: zero rows from tenant B and zero rows above level 1, with no WHERE clause in the query.
 - [x] A context set in one transaction is gone in the next transaction on the same connection. Runs on the direct endpoint and asserts the same `pg_backend_pid()` in both transactions; a control test shows a session-level setting would leak.
-- [x] A `tenant_id` in the request body is ignored. DB level now (a query filtered by another tenant's id returns nothing); step 9 adds the API-level test.
+- [x] A `tenant_id` in the request body is ignored. DB level (a query filtered by another tenant's id returns nothing) and API level (`tests/api/test_documents.py`: a body with another tenant's `tenant_id` registers under the claims' tenant).
 - [x] `app_api` cannot insert chunks; `app_ingest` scoped to tenant A cannot insert a tenant B row.
 
 Also in `tests/rls/`: the catalog test (above) and `test_rls_write_limits.py`, a behaviour test for every policy and grant in the access summary. Negative cases assert the specific error: permission denied, RLS WITH CHECK violation, or the named FK constraint.
