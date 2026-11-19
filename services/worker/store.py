@@ -204,7 +204,9 @@ async def activate(conn: asyncpg.Connection, claim: Claim) -> bool:
             """
             UPDATE document_versions
             SET status = CASE WHEN version = $2 THEN 'indexed' ELSE 'superseded' END,
-                indexed_at = CASE WHEN version = $2 THEN now() ELSE indexed_at END
+                indexed_at = CASE WHEN version = $2 THEN now() ELSE indexed_at END,
+                -- An earlier attempt's error no longer describes a version that is live.
+                last_error = CASE WHEN version = $2 THEN NULL ELSE last_error END
             WHERE doc_id = $1 AND (version = $2 OR status = 'indexed')
             """,
             claim.doc_id,

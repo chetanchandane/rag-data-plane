@@ -21,6 +21,7 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
 - **Chunking rules (`CHUNKER_VERSION = headings-500-800-v1`):** at most 800 tokens; at a heading, close a chunk that has at least 500; never cross a top-level heading; long paragraphs split at sentence ends, long tables by rows with the header repeated. Deterministic, because resume matches chunks by `chunk_index`.
 - **The claim's `attempts` is a fencing token.** `start_embedding` and `mark_failed` include `AND attempts = <claimed>`, so a worker whose lease expired and was re-claimed can't overwrite the newer attempt. If the stored `chunker_version` differs from the current one, the version's chunks are deleted before resuming.
 - **Bedrock retries use botocore's standard mode with `total_max_attempts = 5`:** exponential backoff with full jitter on throttling and 5xx, 5 tries in total. (`max_attempts = 5` would mean 6 tries.) Embeddings run 8 calls in parallel within each batch of 32.
+- **Activation clears `last_error`** on the version it makes live (added 2026-11-19). An earlier attempt's error would otherwise show on a healthy, indexed document in `GET /v1/documents/{id}`. The SPEC doesn't say either way.
 - **Local runner** (`python -m worker.local`): registers the document and version as `app_ingest` with status `uploaded` (stand-in for step 9's API), then runs the same `ingest_version()` the Lambda will run. Dev only; `botocore[crt]` is a dev dependency needed for `aws login` sessions.
 
 ## 2026-11-17: AWS Region is us-east-2

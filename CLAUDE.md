@@ -93,7 +93,7 @@ Work these in order. Each one is a separate session or prompt. Tick them off her
   *Done when:* `uv run pytest` runs (zero tests is fine) and `ruff check` is clean.
 - [x] **2. Migration 0001.** Schema, indexes, roles, `app_tenant()` / `app_role_level()`, RLS policies and grants on every tenant table, exactly per SPEC: Data model and RLS.
   *Done when:* `alembic upgrade head` then `alembic downgrade base` both succeed on the Neon dev branch.
-- [ ] **3. RLS tests.** The 5 tests in SPEC: Proof, "RLS tests", connecting as `app_api` / `app_ingest`.
+- [x] **3. RLS tests.** The 5 tests in SPEC: Proof, "RLS tests", connecting as `app_api` / `app_ingest`.
   *Done when:* `uv run pytest -m db tests/rls` passes, including "no context set returns 0 rows".
 - [x] **3b. Close step-2 gaps.** Migrations 0002 and 0003 (column-level INSERT for `app_api` on `documents` and `document_versions`); behaviour tests for every step-2 policy and grant change, each asserting the specific error; "context gone" test pinned to one server session via the direct endpoint.
   *Done when:* `uv run pytest -m db tests/rls` passes.
@@ -101,7 +101,7 @@ Work these in order. Each one is a separate session or prompt. Tick them off her
   *Done when:* unit tests for the model (valid, unknown `schema_version`, bad key) pass, and the RLS tests use the new context manager.
 - [x] **5. Worker logic, local.** Plain functions: `claim`, `verify_hash`, `parse`, `chunk`, `embed_batch`, `insert_chunks`, `activate`, `mark_failed`. Entry point `python -m worker.local <pdf> --tenant --doc --version`.
   *Done when:* a sample PDF reaches `indexed` with chunks in the DB.
-- [ ] **6. Prove the guarantees.** Tests for: run twice = no new work; crash mid-embed then rerun = same chunk count, no duplicates; v2 then v1 = v2 stays active; wrong hash = `failed`.
+- [x] **6. Prove the guarantees.** Tests for: run twice = no new work; crash mid-embed then rerun = same chunk count, no duplicates; v2 then v1 = v2 stays active; wrong hash = `failed`.
   *Done when:* all four pass.
 - [ ] **7. Terraform bootstrap.** `infra/bootstrap`: state bucket, GitHub OIDC provider, deploy role.
   *Done when:* `plan` is clean. Chetan applies it himself.
@@ -117,6 +117,8 @@ Slices 2 to 4 get their own step list here once Slice 1 is done.
 <!-- BEGIN AWS Agent Toolkit rules -->
 
 > **Project override, read first.** This block is AWS's generic guidance for new-experience projects. Where it conflicts with anything above it in this file (especially "Hard rules" and "How we work"), the rules above win. In particular: nothing that creates, changes or deletes AWS resources runs without Chetan's explicit confirmation in that session, whether through Terraform, the AWS CLI or the `aws-mcp` server. The help level is HIGH; LOW and MEDIUM do not apply in this repo. "You CAN update this rule file" covers only the text inside this block. This project's Region is `us-east-2` (see DECISIONS).
+>
+> **Account:** since 2026-11-19 this project runs in the standard AWS account `905418224080` (`ragdp` profile, `aws login` as IAM user), not a new-experience project (see DECISIONS, "AWS account is 905418224080"). So the new-experience constraints below do not apply to it: the single assigned Region, Free/Paid plan service lists, spend limits, and "project" terminology. `us-east-2` is still the Region by choice. The help-level rules still apply. Before any AWS work, check that `aws sts get-caller-identity --profile ragdp` shows `905418224080`, and never deploy into the new-experience organization's accounts (`056645029578`, `416340982310`, `654740195715`).
 
 # AWS Guidance for the new AWS experience
 

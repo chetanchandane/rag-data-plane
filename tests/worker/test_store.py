@@ -1,81 +1,24 @@
 """DB tests for the worker's claim, failure marking and a full run (Neon dev branch).
 
 Embeddings are faked: these tests never call Bedrock. The four ingestion guarantees (run
-twice, crash and resume, out-of-order versions, wrong hash) are step 6's tests.
+twice, crash and resume, out-of-order versions, wrong hash) are in test_guarantees.py.
 """
 
-import hashlib
 import uuid
-from collections.abc import AsyncIterator
 
 import asyncpg
 import pytest
 
-from shared.db import create_pool, rls_transaction
+from shared.db import rls_transaction
 from shared.errors import PermanentError
 from shared.jobs import S3KeyParts
-from tests.dbutil import db_url
+from tests.worker.dbhelpers import MODEL, fake_embed, key_for, registered, version_row
 from tests.worker.pdfgen import Page, make_pdf
 from worker import store
 from worker.chunking import CHUNKER_VERSION
-from worker.local import register
 from worker.pipeline import ingest_version
 
 pytestmark = pytest.mark.db
-
-MODEL = "fake-embedding-model"
-
-
-def key_for(tenant_id: uuid.UUID, doc_id: uuid.UUID, version: int) -> str:
-    return f"raw/{tenant_id}/{doc_id}/v{version}/source.pdf"
-
-
-def fake_embed(texts: list[str]) -> list[list[float]]:
-    return [[0.5] * 1024 for _ in texts]
-
-
-@pytest.fixture
-async def pool() -> AsyncIterator[asyncpg.Pool]:
-    pool = await create_pool(db_url("DATABASE_URL_INGEST"))
-    yield pool
-    await pool.close()
-
-
-@pytest.fixture
-async def tenant(pool: asyncpg.Pool) -> AsyncIterator[uuid.UUID]:
-    tenant_id = uuid.uuid4()
-    yield tenant_id
-    async with pool.acquire() as conn, rls_transaction(conn, tenant_id, None):
-        await conn.execute("DELETE FROM documents")  # versions and chunks cascade
-        await conn.execute("DELETE FROM tenant_index_state")
-
-
-async def registered(
-    pool: asyncpg.Pool, tenant_id: uuid.UUID, data: bytes = b"pdf bytes", version: int = 1
-) -> tuple[S3KeyParts, str]:
-    doc_id = uuid.uuid4()
-    key = key_for(tenant_id, doc_id, version)
-    async with pool.acquire() as conn:
-        await register(
-            conn,
-            tenant_id,
-            doc_id,
-            version,
-            sha256=hashlib.sha256(data).hexdigest(),
-            s3_key=key,
-            title="t",
-            min_role_level=2,
-        )
-    return S3KeyParts(tenant_id, doc_id, version), key
-
-
-async def version_row(pool: asyncpg.Pool, parts: S3KeyParts) -> asyncpg.Record:
-    async with pool.acquire() as conn, rls_transaction(conn, parts.tenant_id, None):
-        return await conn.fetchrow(
-            "SELECT * FROM document_versions WHERE doc_id = $1 AND version = $2",
-            parts.doc_id,
-            parts.version,
-        )
 
 
 # --- claim ---------------------------------------------------------------------------------
@@ -178,3 +121,22 @@ async def test_a_pdf_reaches_indexed_with_its_chunks(pool: asyncpg.Pool, tenant:
         assert await conn.fetchval("SELECT epoch FROM tenant_index_state") == 1
     assert [c["chunk_index"] for c in chunks] == list(range(result.chunk_count))
     assert {c["min_role_level"] for c in chunks} == {2}  # copied from the document
+
+
+async def test_a_retry_that_succeeds_clears_the_earlier_error(
+    pool: asyncpg.Pool, tenant: uuid.UUID
+) -> None:
+    data = make_pdf([Page(["Some text on the only page."])])
+    parts, key = await registered(pool, tenant, data)
+    async with pool.acquire() as conn:
+        claim = await store.claim(conn, parts, key)
+        assert claim is not None
+        assert await store.mark_failed(conn, claim, "transient: ThrottlingException") is True
+
+    result = await ingest_version(
+        pool, key, load_source=lambda: data, embed=fake_embed, embedding_model=MODEL
+    )
+
+    assert result.outcome == "indexed"
+    row = await version_row(pool, parts)
+    assert (row["status"], row["attempts"], row["last_error"]) == ("indexed", 2, None)
