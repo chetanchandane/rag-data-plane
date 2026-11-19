@@ -2,6 +2,12 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-19: Step 10 is split into 10a to 10e
+
+- **Decision** (approved 2026-11-19): step 10 becomes five steps, each with its own "done when" and commit: 10a production database and first deploy, 10b end-to-end run by hand, 10c CI, 10d deploys, 10e traces. Listed in `CLAUDE.md`.
+- **Why:** step 10's "done when" is every Slice 1 box, and three of them need work no earlier step built: a deploy workflow ("a push to `main` deploys through OIDC"), CI migrations ("migrated on Neon by CI") and telemetry ("traces show parse, chunk and embed spans"). Moving them to Slice 2 was considered and rejected: they are what makes Slice 1 worth posting.
+- **Found while planning:** the Neon project has only its default branch, `main`. The endpoint used as "the dev branch" since 2026-11-17 is therefore probably `main`'s, so bootstrap, migrations and every DB test ran there. No real data is at risk, but `main` can't become production as is: its role passwords are in `.env`, and step 5's local ingest left rows behind. 10a fixes it: create `dev` from `main`, move `.env` to it, then give `main` new passwords that exist only in SSM and empty its tables.
+
 ## 2026-11-19: Step 9 registration endpoint choices
 
 - **A duplicate whose version is still `pending_upload` gets a fresh upload URL** (approved 2026-11-19; SPEC upload flow updated). Any other status returns the existing version with `upload: null`.
