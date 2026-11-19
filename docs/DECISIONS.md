@@ -2,6 +2,17 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-19: Step 7 bootstrap choices
+
+- **The deploy role is `ragdp-github-deploy`.** It trusts `repo:chetanchandane/rag-data-plane:environment:prod` exactly (SPEC: "Deploy identity"), with no wildcard, so branches, pull requests and forks can't assume it. Sessions last at most 1 hour.
+- **Its permissions cover Slice 1's modules only:** storage, ingest, secrets, observability. Each statement is scoped to `ragdp-*` names in `905418224080` and `us-east-2`; only list and describe calls that can't be resource-scoped use `*`. API Gateway is added when the Slice 2 API module exists. Step 8's first real `plan`/`apply` is where any missing permission shows up.
+- **Workload roles get a permissions boundary.** The deploy role can create Lambda roles only under the IAM path `/ragdp/`, and only with `ragdp-workload-boundary` attached. It can pass them only to Lambda.
+  - **Why:** a CI role that can create IAM roles could otherwise create one more powerful than itself (privilege escalation).
+  - The boundary is the most a workload role can ever do: its own logs, `ragdp-*` queues, raw-bucket objects, `/ragdp/prod/*` parameters (and decrypting them via SSM only), and Bedrock `InvokeModel`. Only bootstrap can change it.
+- **State bucket `ragdp-tfstate-905418224080`:** versioned (old versions expire after 90 days), SSE-S3, public access blocked, ACLs off, TLS-only policy, `prevent_destroy`. The deploy role can reach only `envs/prod/terraform.tfstate` and its `.tflock` file.
+- **Bootstrap's own state** starts local, because the bucket doesn't exist yet. After the first apply it moves to `bootstrap/terraform.tfstate` in the bucket with `init -migrate-state` (steps in `infra/bootstrap/README.md`).
+- **`allowed_account_ids = ["905418224080"]`** in the provider makes Terraform refuse to run against any other account.
+
 ## 2026-11-19: AWS account is 905418224080
 
 - **Decision:** all AWS work (Bedrock now; S3, Lambda, SQS, ECR and Terraform in steps 7 and 8) goes in the standard AWS account `905418224080`, Region `us-east-2`. The `ragdp` CLI profile signs in to it with `aws login` as the IAM user, not a static access key. `.env` and the code are unchanged (`AWS_PROFILE=ragdp`).

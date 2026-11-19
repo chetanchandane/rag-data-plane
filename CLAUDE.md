@@ -103,7 +103,7 @@ Work these in order. Each one is a separate session or prompt. Tick them off her
   *Done when:* a sample PDF reaches `indexed` with chunks in the DB.
 - [x] **6. Prove the guarantees.** Tests for: run twice = no new work; crash mid-embed then rerun = same chunk count, no duplicates; v2 then v1 = v2 stays active; wrong hash = `failed`.
   *Done when:* all four pass.
-- [ ] **7. Terraform bootstrap.** `infra/bootstrap`: state bucket, GitHub OIDC provider, deploy role.
+- [x] **7. Terraform bootstrap.** `infra/bootstrap`: state bucket, GitHub OIDC provider, deploy role.
   *Done when:* `plan` is clean. Chetan applies it himself.
 - [ ] **8. Terraform storage + ingest.** S3 bucket, EventBridge rule + input transformer, SQS + DLQ, ECR repo, worker Lambda (image), event source mapping, DLQ alarm, Budget alerts. Thin SQS handler wrapping step 5's functions: permanent errors go straight to the DLQ with a reason, transient errors are raised for SQS to retry (SPEC: Ingestion, "Failure handling"). The worker role needs `sqs:SendMessage` on the DLQ.
   *Done when:* `plan` is clean and matches SPEC queue settings. Chetan applies it.
