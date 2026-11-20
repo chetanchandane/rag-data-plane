@@ -157,8 +157,10 @@ data "aws_iam_policy_document" "deploy_trust" {
       variable = "token.actions.githubusercontent.com:aud"
       values   = ["sts.amazonaws.com"]
     }
-    # Exact match, no wildcard: only jobs that run in this repo's `prod` environment. Other
-    # branches, pull requests and forks get a different `sub` and are refused. The repo uses
+    # Exact match, no wildcard: only jobs that run in this repo's `prod` environment. Any job
+    # that names that environment gets this `sub`, whatever its branch, so GitHub's deployment
+    # branch policy (prod: `main` only) is what keeps other branches and pull requests out;
+    # forks get a different `sub` and are refused. The repo uses
     # GitHub's immutable subject (numeric owner and repo IDs, not just names), so a repo
     # recreated under the same name can't assume these roles either.
     condition {
@@ -246,6 +248,14 @@ data "aws_iam_policy_document" "deploy" {
       variable = "lambda:FunctionArn"
       values   = ["arn:aws:lambda:${local.region}:${local.account}:function:${local.p}-*"]
     }
+  }
+
+  # Terraform reads and writes the mapping's tags (default_tags) by the mapping's own ARN,
+  # which has a random id and no condition key naming its function. Tag calls only.
+  statement {
+    sid       = "EventSourceMappingTags"
+    actions   = ["lambda:ListTags", "lambda:TagResource", "lambda:UntagResource"]
+    resources = ["arn:aws:lambda:${local.region}:${local.account}:event-source-mapping:*"]
   }
 
   statement {

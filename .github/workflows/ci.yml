@@ -1,11 +1,13 @@
-# CI (step 10c, DECISIONS 2026-11-20): lint and unit tests on every push and pull request;
-# DB tests on a throwaway Neon branch; on main, migrations on production.
+# CI (steps 10c and 10d, DECISIONS 2026-11-20): lint and unit tests on every push and pull
+# request; DB tests on a throwaway Neon branch; on main, migrations on production, then the
+# deploy (deploy.yml).
 #
 # Third-party actions are pinned by commit SHA (a tag can be moved), with the tag in a comment.
 # GitHub settings this needs (docs/runbooks/ci-setup.md):
 #   secrets:   NEON_API_KEY, DEV_APP_API_PASSWORD, DEV_APP_INGEST_PASSWORD
 #   variables: NEON_PROJECT_ID
-#   environment `prod` (main only), trusted by the ragdp-github-migrate role
+#   environment `prod` (deployment branch policy: main only), trusted by the
+#   ragdp-github-migrate and ragdp-github-deploy roles; its secret ALERT_EMAIL (deploy.yml)
 
 name: CI
 
@@ -116,7 +118,7 @@ jobs:
     needs: [lint-and-unit, db]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # The `prod` environment only runs from main, and it's the only `sub` the AWS role trusts.
+    # GitHub lets only main use the `prod` environment, and it's the only `sub` the role trusts.
     environment: prod
     permissions:
       contents: read
@@ -157,3 +159,12 @@ jobs:
         run: |
           uv run alembic upgrade head
           uv run alembic current
+
+  # After the migrations, so new code never runs against an old schema.
+  deploy:
+    needs: migrate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy.yml

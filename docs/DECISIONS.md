@@ -8,6 +8,17 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
 - **Why:** step 10's "done when" is every Slice 1 box, and three of them need work no earlier step built: a deploy workflow ("a push to `main` deploys through OIDC"), CI migrations ("migrated on Neon by CI") and telemetry ("traces show parse, chunk and embed spans"). Moving them to Slice 2 was considered and rejected: they are what makes Slice 1 worth posting.
 - **Checked while planning:** whether the endpoint used as "the dev branch" since 2026-11-17 was really `main`'s. It wasn't. The project has a `dev` child branch (`ep-sparkling-heart-bdl5i7aa`), and `main` has its own endpoint (`ep-wandering-math-bdgo4xwq`). Every DB test ran on `dev`.
 
+## 2026-11-20: Step 10d deploys
+
+- **A push to `main` deploys with no approval** (approved 2026-11-20). `ci.yml` calls `deploy.yml` after `migrate`, so new code never meets an old schema. The `prod` environment's required reviewer is removed.
+  - **Why:** every change has already passed lint, unit tests, the migration round trip and the DB tests, and only Chetan pushes to `main`. Keeping the reviewer would have meant two approvals per push (migrate and deploy are separate jobs with separate roles); merging them into one job to need one approval would put both roles' credentials in one job.
+  - **The guard instead:** the deploy fails if the Terraform plan deletes or replaces any resource. Those are applied by hand after review (`infra/envs/prod/README.md`).
+- **`prod` accepts only `main`** (deployment branch policy, set 2026-11-20). It had no branch restriction, and any job naming `prod` gets the `sub` both roles trust, so until now only the reviewer kept other branches out. The step 7 entry's "branches can't assume it" and step 10c's comments were wrong about this; the bootstrap comment is corrected.
+- **The image is tagged with the full commit SHA** and built on every push to `main`. ECR tags are immutable, so a rerun finds the image and skips the push. The lifecycle policy keeps the last 3 images, which is the rollback window.
+- **The plan that's applied is the one that was checked** (`plan -out`, then `apply tfplan`). `init -lockfile=readonly` uses the committed provider hashes; the lock file now has `linux_amd64` hashes too.
+- **The deploy role gains tag permissions on event source mappings** (`lambda:ListTags`, `TagResource`, `UntagResource` on `event-source-mapping:*`). Found before the first run: CloudTrail showed Terraform calling `ListTags` with the mapping's ARN, and the IAM policy simulator showed it denied. Mappings have random ids and no condition key naming their function, so the resource can't be narrower. (The simulator also denied `sns:GetSubscriptionAttributes`, but it denies that even for `sns:*` on `*`; AWS's service reference authorizes it against the topic, which the role already covers.)
+- **`alert_email` is the `prod` environment secret `ALERT_EMAIL`,** passed as `TF_VAR_alert_email`, so it stays out of the repo and is masked in logs.
+
 ## 2026-11-20: Step 10c CI
 
 - **DB tests run on a throwaway Neon branch per CI run** (approved 2026-11-20), created from `dev` by `neondatabase/create-branch-action` and deleted at the end. It also expires after 2 hours, in case the delete never runs.
