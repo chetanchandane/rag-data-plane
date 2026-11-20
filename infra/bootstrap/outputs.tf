@@ -17,3 +17,8 @@ output "workload_role_path" {
   description = "Every role the deploy role creates must live under this IAM path."
   value       = local.workload_role_path
 }
+
+output "migrate_role_arn" {
+  description = "For the CI workflow's production migrate job."
+  value       = aws_iam_role.migrate.arn
+}

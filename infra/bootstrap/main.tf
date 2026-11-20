@@ -362,6 +362,55 @@ resource "aws_iam_role_policy" "deploy" {
   policy = data.aws_iam_policy_document.deploy.json
 }
 
+# --- 3b. Migrate role (step 10c) -----------------------------------------------------------
+
+# CI's production migrate job: reads the app_owner URL from SSM and runs Alembic. It can do
+# nothing else in AWS. Same trust as the deploy role (this repo's `prod` environment only).
+# A job's credentials are then only what that job needs, though both roles trust the same
+# `sub`, so this separates credentials per job rather than drawing a hard boundary.
+resource "aws_iam_role" "migrate" {
+  name                 = "${local.p}-github-migrate"
+  description          = "Assumed by GitHub Actions (${var.github_repo}, environment ${var.github_environment}) to run database migrations on production."
+  assume_role_policy   = data.aws_iam_policy_document.deploy_trust.json
+  max_session_duration = 3600
+}
+
+locals {
+  owner_url_parameter_arn = "arn:aws:ssm:${local.region}:${local.account}:parameter/${local.p}/prod/database_url_owner"
+}
+
+data "aws_iam_policy_document" "migrate" {
+  statement {
+    sid       = "ReadOwnerUrl"
+    actions   = ["ssm:GetParameter"]
+    resources = [local.owner_url_parameter_arn]
+  }
+
+  # The parameter is a SecureString under the AWS-managed SSM key. Decrypt only through SSM,
+  # and only for this one parameter (SSM puts its ARN in the encryption context).
+  statement {
+    sid       = "DecryptOwnerUrlViaSsm"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${local.region}.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:PARAMETER_ARN"
+      values   = [local.owner_url_parameter_arn]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "migrate" {
+  name   = "read-owner-url"
+  role   = aws_iam_role.migrate.id
+  policy = data.aws_iam_policy_document.migrate.json
+}
+
 # --- 4. Workload permissions boundary ------------------------------------------------------
 
 # The most any Lambda role made by the deploy role can ever do. Each role still gets its own,

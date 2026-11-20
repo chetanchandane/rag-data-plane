@@ -1,0 +1,159 @@
+# CI (step 10c, DECISIONS 2026-11-20): lint and unit tests on every push and pull request;
+# DB tests on a throwaway Neon branch; on main, migrations on production.
+#
+# Third-party actions are pinned by commit SHA (a tag can be moved), with the tag in a comment.
+# GitHub settings this needs (docs/runbooks/ci-setup.md):
+#   secrets:   NEON_API_KEY, DEV_APP_API_PASSWORD, DEV_APP_INGEST_PASSWORD
+#   variables: NEON_PROJECT_ID
+#   environment `prod` (main only), trusted by the ragdp-github-migrate role
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege by default; only the migrate job may request an OIDC token.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # A newer push to a pull request makes the older run pointless. On main, let each run
+  # finish, so every commit gets its migrations.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_VERSION: "0.11.29"
+  # Ubuntu's CA bundle. The URLs in .env and SSM name /etc/ssl/cert.pem (macOS and the
+  # Lambda image), which Ubuntu doesn't have.
+  CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+
+jobs:
+  lint-and-unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - name: Unit tests (no network, no secrets)
+        run: uv run pytest
+
+  db:
+    needs: lint-and-unit
+    # Needs secrets, which GitHub withholds from pull requests opened from forks.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --frozen
+
+      # Safety net: Neon deletes the branch by itself at this time if the delete step at the
+      # end never runs (a cancelled job, a runner crash).
+      - name: Branch expiry
+        run: echo "EXPIRES_AT=$(date -u --date '+2 hours' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      # A copy of the dev branch: same schema, same roles and passwords. Each run gets its
+      # own, so runs can't interfere and a pull request's migration never touches shared dev.
+      - name: Create a throwaway Neon branch
+        id: branch
+        uses: neondatabase/create-branch-action@72ed4f69a12b6be9c16aebfad893f6a21e9aba8b # v6.4.0
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          parent_branch: dev
+          branch_name: ci-${{ github.run_id }}-${{ github.run_attempt }}
+          role: app_owner # its password comes back as an output (masked in logs)
+          database: neondb
+          expires_at: ${{ env.EXPIRES_AT }}
+
+      # Same URL shapes as db/bootstrap.py: owner on the direct host for psycopg (Alembic),
+      # app roles on the pooled host for asyncpg. Secrets are masked wherever they appear.
+      - name: Connection strings for the branch
+        env:
+          HOST: ${{ steps.branch.outputs.db_host }}
+          HOST_POOLED: ${{ steps.branch.outputs.db_host_pooled }}
+          OWNER_PW: ${{ steps.branch.outputs.password }}
+          API_PW: ${{ secrets.DEV_APP_API_PASSWORD }}
+          INGEST_PW: ${{ secrets.DEV_APP_INGEST_PASSWORD }}
+        run: |
+          tls="sslmode=verify-full&sslrootcert=${CA_BUNDLE}"
+          {
+            echo "DATABASE_URL_OWNER=postgresql://app_owner:${OWNER_PW}@${HOST}/neondb?${tls}&channel_binding=require"
+            echo "DATABASE_URL_API=postgresql://app_api:${API_PW}@${HOST_POOLED}/neondb?${tls}"
+            echo "DATABASE_URL_INGEST=postgresql://app_ingest:${INGEST_PW}@${HOST_POOLED}/neondb?${tls}"
+          } >> "$GITHUB_ENV"
+
+      # The branch starts at the dev schema. Down to nothing and back up proves every
+      # migration's downgrade works and that head can be built from scratch.
+      - name: Migrations round trip
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
+      # "not paid": CI never calls a paid API, even from a test that also touches the DB.
+      - name: DB tests (RLS, worker store, API)
+        run: uv run pytest -m "db and not paid"
+
+      - name: Delete the branch
+        if: always() && steps.branch.outputs.branch_id != ''
+        uses: neondatabase/delete-branch-action@4468d825d5a88ef4012f1705a82f02ec3072f776 # v3.2.1
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch: ${{ steps.branch.outputs.branch_id }}
+
+  migrate:
+    needs: [lint-and-unit, db]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # The `prod` environment only runs from main, and it's the only `sub` the AWS role trusts.
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write # to sign in to AWS with OIDC; no stored AWS keys
+    # Never two migration runs against production at once.
+    concurrency:
+      group: migrate-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --frozen
+
+      # infra/bootstrap output migrate_role_arn. It may only read the owner URL parameter.
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::905418224080:role/ragdp-github-migrate
+          role-session-name: migrate-${{ github.run_id }}
+          aws-region: us-east-2
+
+      # SSM is the only copy of the owner URL (db/bootstrap.py --production writes it), so a
+      # password rotation needs no change here. Masked before anything could print it.
+      - name: Owner URL from SSM
+        run: |
+          url=$(aws ssm get-parameter --name /ragdp/prod/database_url_owner \
+            --with-decryption --query Parameter.Value --output text)
+          password=${url#*://app_owner:}
+          password=${password%%@*}
+          echo "::add-mask::${password}"
+          echo "::add-mask::${url}"
+          url=${url//sslrootcert=\/etc\/ssl\/cert.pem/sslrootcert=${CA_BUNDLE}}
+          echo "::add-mask::${url}"
+          echo "DATABASE_URL_OWNER=${url}" >> "$GITHUB_ENV"
+
+      - name: Migrate production
+        run: |
+          uv run alembic upgrade head
+          uv run alembic current

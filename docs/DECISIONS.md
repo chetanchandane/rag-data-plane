@@ -8,6 +8,21 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
 - **Why:** step 10's "done when" is every Slice 1 box, and three of them need work no earlier step built: a deploy workflow ("a push to `main` deploys through OIDC"), CI migrations ("migrated on Neon by CI") and telemetry ("traces show parse, chunk and embed spans"). Moving them to Slice 2 was considered and rejected: they are what makes Slice 1 worth posting.
 - **Checked while planning:** whether the endpoint used as "the dev branch" since 2026-11-17 was really `main`'s. It wasn't. The project has a `dev` child branch (`ep-sparkling-heart-bdl5i7aa`), and `main` has its own endpoint (`ep-wandering-math-bdgo4xwq`). Every DB test ran on `dev`.
 
+## 2026-11-20: Step 10c CI
+
+- **DB tests run on a throwaway Neon branch per CI run** (approved 2026-11-20), created from `dev` by `neondatabase/create-branch-action` and deleted at the end. It also expires after 2 hours, in case the delete never runs.
+  - **Why:** runs can't interfere with each other, and a pull request's new migration is tested on a copy instead of changing shared `dev` before review.
+  - The copy inherits `dev`'s roles and passwords. `app_owner`'s password comes from the action's output; `app_api`'s and `app_ingest`'s are GitHub secrets. Plus `NEON_API_KEY` (secret) and `NEON_PROJECT_ID` (variable). Setup: `docs/runbooks/ci-setup.md`.
+  - The job runs the migrations as a round trip (upgrade, downgrade to base, upgrade), then `pytest -m "db and not paid"`.
+- **Production migrations run in a `migrate` job on pushes to `main`,** in the `prod` environment, after lint, unit and DB tests pass. Never two at once (`concurrency: migrate-prod`). 10d's deploy job will run after it, so the schema is ready before new code.
+- **The migrate job reads the owner URL from SSM with a new role, `ragdp-github-migrate`** (approved 2026-11-20). Its only permissions: `ssm:GetParameter` on `/ragdp/prod/database_url_owner`, and `kms:Decrypt` only via SSM for that parameter's encryption context.
+  - **Why:** SSM stays the only copy, so `bootstrap.py --production` rotations need no GitHub change, and no DB credential is stored in GitHub. The deploy role keeps no SSM access.
+  - **Limit, stated plainly:** both roles trust the same `sub` (`environment:prod`), so a job in that environment could assume either. This separates credentials per job; it isn't a hard boundary. Telling them apart would need a customized `sub` claim, which isn't worth it for one repo.
+  - The role is at IAM path `/`, so the deploy role (which manages only `/ragdp/`) can't edit it.
+- **Third-party actions are pinned by commit SHA** with the tag in a comment, because a tag can be moved. The workflow defaults to `permissions: contents: read`; only `migrate` gets `id-token: write`.
+- **CI's URLs use Ubuntu's CA bundle** (`/etc/ssl/certs/ca-certificates.crt`); the stored URLs name `/etc/ssl/cert.pem`, which Ubuntu lacks.
+- **The workflow is linted with `actionlint`** (a Homebrew tool, not a project dependency).
+
 ## 2026-11-19: Step 10b end-to-end run
 
 - **The API runs on the laptop for Slice 1** (`python -m api.local`), on `127.0.0.1` only, because the auth stub is one shared token. `uvicorn` is a dev dependency for it; the API Lambda (Mangum) comes in Slice 2.
