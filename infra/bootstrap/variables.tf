@@ -13,6 +13,16 @@ variable "github_repo" {
   type        = string
 }
 
+variable "github_subject_prefix" {
+  description = "Start of the OIDC `sub` claim for github_repo. This repo uses GitHub's immutable subjects (owner@owner_id/name@repo_id), so a deleted and recreated repo with the same name gets a different `sub`. Get the IDs with: gh api repos/OWNER/NAME --jq '.owner.id, .id'."
+  type        = string
+
+  validation {
+    condition     = can(regex("^repo:[^/@]+@[0-9]+/[^/@]+@[0-9]+$", var.github_subject_prefix))
+    error_message = "Must look like repo:OWNER@OWNER_ID/NAME@REPO_ID."
+  }
+}
+
 variable "github_environment" {
   description = "The GitHub Actions environment allowed to assume the deploy role."
   type        = string

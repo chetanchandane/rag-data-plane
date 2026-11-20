@@ -158,11 +158,13 @@ data "aws_iam_policy_document" "deploy_trust" {
       values   = ["sts.amazonaws.com"]
     }
     # Exact match, no wildcard: only jobs that run in this repo's `prod` environment. Other
-    # branches, pull requests and forks get a different `sub` and are refused.
+    # branches, pull requests and forks get a different `sub` and are refused. The repo uses
+    # GitHub's immutable subject (numeric owner and repo IDs, not just names), so a repo
+    # recreated under the same name can't assume these roles either.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:environment:${var.github_environment}"]
+      values   = ["${var.github_subject_prefix}:environment:${var.github_environment}"]
     }
   }
 }

@@ -532,13 +532,13 @@ load/                     # k6 scripts
 
 **Secrets.** DB URLs and API keys live in SSM Parameter Store as SecureStrings under `/ragdp/prod/`. Each Lambda's IAM policy can read only its own parameters. Values are fetched once per cold start and cached in memory, never put in plaintext environment variables.
 
-**Deploy identity.** The deploy role trusts only this repo's `prod` environment:
+**Deploy identity.** The deploy role trusts only this repo's `prod` environment. GitHub's immutable subject names the owner and repo by numeric ID too, so a recreated repo with the same name is refused (DECISIONS 2026-11-20, "Step 10c CI"):
 
 ```json
 "Condition": {
   "StringEquals": {
     "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-    "token.actions.githubusercontent.com:sub": "repo:<owner>/rag-data-plane:environment:prod"
+    "token.actions.githubusercontent.com:sub": "repo:<owner>@<owner_id>/rag-data-plane@<repo_id>:environment:prod"
   }
 }
 ```
@@ -639,7 +639,7 @@ Four slices, about 10 to 12 focused days in total. Each one ends deployed, with 
 ### Slice 1: Ingestion (3 to 4 days)
 
 - [ ] `bootstrap` applied; a push to `main` deploys through OIDC
-- [ ] Schema, roles and RLS policies migrated on Neon by CI
+- [x] Schema, roles and RLS policies migrated on Neon by CI
 - [x] `POST /v1/documents` returns a presigned URL; an upload with the wrong checksum is rejected by S3
 - [x] A 20-page PDF goes from upload to `indexed`, visible via `GET /v1/documents/{id}`
 - [x] Duplicate upload creates no new version; duplicate message creates no duplicate chunks
