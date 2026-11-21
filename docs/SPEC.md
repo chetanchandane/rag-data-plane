@@ -546,7 +546,7 @@ scripts/                  # issuer.py: token issuer keys and minting (laptop onl
 }
 ```
 
-**Auth at the edge.** The HTTP API's JWT authorizer validates issuer, audience and expiry against the control plane's JWKS before any Lambda runs. Until a control plane exists, a static issuer in this repo stands in for it; the issuer URL and audience are Terraform variables (DECISIONS 2026-11-21). The app re-reads the claims for RLS. Route throttling (for example 10 requests/s, burst 20) protects the model budget; a per-tenant daily token quota in Postgres is the second layer.
+**Auth at the edge.** The HTTP API's JWT authorizer validates issuer, audience and expiry against the control plane's JWKS before any Lambda runs. Until a control plane exists, a static issuer in this repo stands in for it; the issuer URL and audience are Terraform variables (DECISIONS 2026-11-21). The app reads the claims the authorizer passes on for RLS, without verifying the token again; locally, with no API Gateway in front, it verifies the token itself (DECISIONS 2026-11-21, "Step 12"). Route throttling (for example 10 requests/s, burst 20) protects the model budget; a per-tenant daily token quota in Postgres is the second layer.
 
 **Monthly cost (approximate, demo traffic)**
 

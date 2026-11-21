@@ -9,7 +9,6 @@ The DB URL comes from one of two places, never both:
 
 import os
 from dataclasses import dataclass
-from uuid import UUID
 
 import boto3
 
@@ -25,26 +24,30 @@ class Settings:
     database_url: str  # app_api role, pooled endpoint
     raw_bucket: str
     aws_region: str
-    # Slice 1 auth stub (CLAUDE.md "Auth in Slice 1"); replaced by JWT claims in Slice 2.
-    dev_auth_token: str
-    dev_tenant_id: UUID
-    dev_role_level: int
+    # The token issuer the API verifies tokens against when no API Gateway is in front
+    # (api/auth.py). Not set on Lambda: there API Gateway's authorizer verifies them.
+    jwt_issuer: str | None = None
 
     @classmethod
     def from_env(cls, ssm=None) -> "Settings":
         """Fail at startup, not on the first request, if anything is missing or malformed.
         ssm: an SSM client, for tests; by default one is created if it's needed."""
-        role_level = int(_required("DEV_ROLE_LEVEL"))
-        if not 1 <= role_level <= 3:
-            raise ValueError("DEV_ROLE_LEVEL must be 1, 2 or 3")
         return cls(
             database_url=_database_url(ssm),
             raw_bucket=_required("RAW_BUCKET"),
             aws_region=_required("AWS_REGION"),
-            dev_auth_token=_required("DEV_AUTH_TOKEN"),
-            dev_tenant_id=UUID(_required("DEV_TENANT_ID")),
-            dev_role_level=role_level,
+            jwt_issuer=_issuer(),
         )
+
+
+def _issuer() -> str | None:
+    issuer = os.environ.get("JWT_ISSUER", "").strip()
+    if not issuer:
+        return None
+    # A token's iss must equal this exactly, so https://x/ and https://x would differ.
+    if not issuer.startswith("https://") or issuer.endswith("/"):
+        raise ValueError("JWT_ISSUER must be an https URL with no trailing slash")
+    return issuer
 
 
 def _database_url(ssm) -> str:

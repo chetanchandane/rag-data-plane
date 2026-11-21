@@ -2,6 +2,22 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-21: Step 12 claims in the API
+
+- **On Lambda, the API trusts the claims API Gateway's JWT authorizer verified** (Chetan, 2026-11-21). It doesn't verify the token again.
+  - **What API Gateway checks before the function runs** (AWS docs): the signature against the issuer's JWKS (RSA only), `kid`, `iss`, `aud`, `exp`, `nbf` and `iat`. It then passes the claims to the integration at `requestContext.authorizer.jwt.claims` in the payload format 2.0 event. Mangum puts that event in the ASGI scope as `aws.event`.
+  - **Why it's safe:** only API Gateway can invoke the function, through the function's resource policy (step 13). Anyone who could invoke it directly can already change it.
+  - **Trade-off:** a retired key is refused only once API Gateway's JWKS cache refreshes (up to 2 hours). A second check in the Lambda would use the same published JWKS, so it would only shorten that window to its own cache's lifetime. For a leak, the runbook's CloudFront invalidation does more.
+- **Where the claims come from is decided per request, not by a setting.** A request with `aws.event` in its scope came through Lambda: its authorizer claims are used, and a request without them gets a 401, even with a valid bearer token. Any other request (`api.local`, tests) is verified by the API itself. The ASGI scope is built by the server, so a client can't add `aws.event`.
+  - **Rejected:** an `AUTH_MODE` setting. It's one more thing to misconfigure, and the wrong value would either trust nothing or verify nothing.
+- **Without API Gateway in front, the API verifies tokens with PyJWT** (`api/token_verifier.py`), making the same checks. RS256 only, so `alg: none` and HS256 are refused. It also requires `exp`, `iat`, `iss`, `aud` and `sub`.
+  - **The JWKS is found the way API Gateway finds it:** through the issuer's discovery document, fetched once at startup. So a wrong `JWT_ISSUER` fails at startup.
+  - **Keys are cached by PyJWT's `PyJWKClient`.** It caches the JWKS for 5 minutes and fetches it again for an unknown `kid`, at most once every 30 seconds. So junk `kid`s can't make it fetch on every request.
+- **On both paths the claims are then checked:** `tenant_id` must be a UUID and `role_level` 1, 2 or 3. API Gateway may pass every claim value as a string (its docs don't say), so the strings `"1"` to `"3"` are accepted too. `true`, `2.0` and `"02"` aren't. Step 13 confirms the real event's shape.
+- **Every failure is the same 401** (`invalid or missing bearer token`, `WWW-Authenticate: Bearer`). The reason goes only to the server log.
+- **`pyjwt[crypto]` moves to the dev dependencies.** Only `api/token_verifier.py` (imported only when `JWT_ISSUER` is set), `shared/tokens.py` and `scripts/issuer.py` import it, and none of them run on Lambda. The Lambda images lose PyJWT, cryptography, cffi and pycparser. A unit test checks that importing the API and the worker loads neither `jwt` nor `cryptography`.
+- **The dev auth stub is gone,** with `DEV_AUTH_TOKEN`, `DEV_TENANT_ID` and `DEV_ROLE_LEVEL` (it replaces the 2026-11-16 "Dev auth stub" entry). Local runs use `scripts/issuer.py mint` tokens.
+
 ## 2026-11-21: Step 11 token issuer hosting and keys
 
 - **Hosting: CloudFront in front of a private S3 bucket** (approved 2026-11-21). The bucket keeps every Block Public Access setting on, and only this distribution can read it, through origin access control (OAC).
@@ -377,3 +393,4 @@ Also from step 4:
 
 - **Decision:** until Slice 2, endpoints take claims from a `get_claims()` dependency that accepts a fixed `DEV_AUTH_TOKEN`.
 - **Why:** real JWT verification depends on Open decision #1 (RS256 + JWKS in rag-control-plane). The stub keeps Slice 1 unblocked, and isolating it in one function means the swap later touches one place.
+- **Replaced** in step 12 (2026-11-21, "Step 12 claims in the API").

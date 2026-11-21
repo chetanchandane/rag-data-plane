@@ -18,7 +18,7 @@ The full design is in `docs/SPEC.md`. **It is the source of truth.** Before star
 
 **Security**
 - The app connects to Postgres only as `app_api` or `app_ingest`. Never as `app_owner` or Neon's default owner role (it may bypass RLS). Only migrations run as `app_owner`.
-- `tenant_id` and `role_level` come only from verified token claims (Slice 1: the dev auth stub). Never from request bodies, query strings or S3 keys alone.
+- `tenant_id` and `role_level` come only from verified token claims: on Lambda, the claims API Gateway's JWT authorizer verified; locally, a token the API verifies itself (see "Auth"). Never from request bodies, query strings or S3 keys alone.
 - Set request context only with `set_config('app.tenant_id', $1, true)` and `set_config('app.role_level', $2, true)` inside a transaction. The `true` (transaction-local) is required because of Neon's pooled endpoint.
 - Every new tenant table gets `ENABLE` + `FORCE ROW LEVEL SECURITY`, policies, grants, and RLS tests in the same change.
 - SQL is always parameterized. No string formatting of values into SQL.
@@ -77,16 +77,13 @@ DATABASE_URL_INGEST=    # app_ingest role, pooled endpoint
 AWS_REGION=us-east-2
 EMBEDDING_MODEL_ID=amazon.titan-embed-text-v2:0
 RAW_BUCKET=
-DEV_AUTH_TOKEN=         # Slice 1 only, see below
-DEV_TENANT_ID=
-DEV_ROLE_LEVEL=3
 HONEYCOMB_API_KEY=      # optional, local traces only; Lambda reads its key from SSM
-JWT_ISSUER=             # token issuer URL (terraform output issuer_url), for scripts/issuer.py mint
+JWT_ISSUER=             # token issuer URL (terraform output issuer_url): issuer.py mint signs for it, api.local verifies against it
 ```
 
-## Auth in Slice 1
+## Auth
 
-Real JWT verification (control-plane JWKS + API Gateway authorizer) arrives in Slice 2. Until then, a FastAPI dependency `get_claims()` accepts `Authorization: Bearer $DEV_AUTH_TOKEN` and returns `DEV_TENANT_ID` / `DEV_ROLE_LEVEL`. Every endpoint must take claims only from `get_claims()`, so swapping in real JWTs later changes one function.
+Every endpoint takes claims only from the FastAPI dependency `get_claims()` (`services/api/auth.py`, DECISIONS 2026-11-21 "Step 12"). On Lambda it reads the claims API Gateway's JWT authorizer already verified (`requestContext.authorizer.jwt.claims`) and doesn't verify again. Anywhere else (`api.local`, tests) it verifies the bearer token itself with PyJWT against `JWT_ISSUER`'s JWKS. Both paths then require `tenant_id` (a UUID) and `role_level` (1 to 3). Tokens come from `scripts/issuer.py mint`. PyJWT is a dev dependency, so nothing that runs on Lambda may import it.
 
 ## Build plan: Slice 1 (ingestion)
 

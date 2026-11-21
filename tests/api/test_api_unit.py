@@ -1,4 +1,7 @@
-"""API unit tests: auth stub, request validation, presigned URLs, settings. No network."""
+"""API unit tests: request validation, presigned URLs, settings. No network.
+
+Auth: tests/api/test_auth.py.
+"""
 
 import base64
 import hashlib
@@ -25,30 +28,6 @@ class UntouchablePool:
 
 def app(role_level: int = 3):
     return build_app(UntouchablePool(), TENANT, role_level)
-
-
-# --- auth stub ----------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "headers",
-    [
-        {},
-        {"Authorization": "Bearer wrong-token"},
-        {"Authorization": "Basic dGVzdC10b2tlbjp4"},
-        {"Authorization": "test-token-not-a-secret"},  # no scheme
-    ],
-    ids=["missing", "wrong_token", "basic_scheme", "no_scheme"],
-)
-async def test_requests_without_the_token_get_401(headers):
-    async with client(app(), token=None) as c:
-        for method, path, kwargs in [
-            ("POST", "/v1/documents", {"json": registration()}),
-            ("GET", f"/v1/documents/{uuid.uuid4()}", {}),
-        ]:
-            resp = await c.request(method, path, headers=headers, **kwargs)
-            assert resp.status_code == 401
-            assert resp.headers["www-authenticate"] == "Bearer"
 
 
 # --- request validation (rejected before the database) ------------------------------------
@@ -152,9 +131,7 @@ _ENV = {
     "DATABASE_URL_API": "postgresql://app_api@host/db",
     "RAW_BUCKET": BUCKET,
     "AWS_REGION": "us-east-2",
-    "DEV_AUTH_TOKEN": "t",
-    "DEV_TENANT_ID": str(TENANT),
-    "DEV_ROLE_LEVEL": "2",
+    "JWT_ISSUER": "https://d111111abcdef8.cloudfront.net",
 }
 
 
@@ -169,6 +146,7 @@ class FakeSsm:
 
 def _set_env(monkeypatch, env):
     monkeypatch.delenv("DATABASE_URL_API_PARAM", raising=False)
+    monkeypatch.delenv("JWT_ISSUER", raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
 
@@ -179,8 +157,13 @@ def test_settings_read_from_the_environment(monkeypatch):
     settings = Settings.from_env(ssm=ssm)
     assert settings.database_url == _ENV["DATABASE_URL_API"]
     assert ssm.calls == []  # a URL in the environment never touches SSM
-    assert settings.dev_tenant_id == TENANT
-    assert settings.dev_role_level == 2
+    assert settings.jwt_issuer == "https://d111111abcdef8.cloudfront.net"
+
+
+def test_jwt_issuer_is_optional_for_lambda(monkeypatch):
+    # On Lambda API Gateway verifies tokens, so there's no issuer to verify against.
+    _set_env(monkeypatch, {k: v for k, v in _ENV.items() if k != "JWT_ISSUER"})
+    assert Settings.from_env(ssm=FakeSsm()).jwt_issuer is None
 
 
 def test_the_database_url_can_come_from_ssm(monkeypatch):
@@ -202,10 +185,11 @@ def test_settings_need_exactly_one_database_url_source(monkeypatch, param):
 
 
 @pytest.mark.parametrize(
-    ("name", "value"),
-    [("DEV_AUTH_TOKEN", ""), ("DEV_AUTH_TOKEN", "  "), ("DEV_ROLE_LEVEL", "4")],
+    "issuer",
+    ["http://d111111abcdef8.cloudfront.net", "https://d111111abcdef8.cloudfront.net/"],
+    ids=["plain_http", "trailing_slash"],
 )
-def test_settings_fail_at_startup_when_auth_is_misconfigured(monkeypatch, name, value):
-    _set_env(monkeypatch, _ENV | {name: value})
-    with pytest.raises((RuntimeError, ValueError)):
+def test_settings_fail_at_startup_on_a_bad_issuer(monkeypatch, issuer):
+    _set_env(monkeypatch, _ENV | {"JWT_ISSUER": issuer})
+    with pytest.raises(ValueError, match="JWT_ISSUER"):
         Settings.from_env(ssm=FakeSsm())

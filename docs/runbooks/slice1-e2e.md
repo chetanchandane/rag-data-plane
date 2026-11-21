@@ -25,16 +25,20 @@ export BUCKET=$(terraform -chdir=infra/envs/prod output -raw raw_bucket)
 export QUEUE=$(terraform -chdir=infra/envs/prod output -raw ingest_queue_url)
 export DLQ=$(terraform -chdir=infra/envs/prod output -raw dlq_url)
 
-# Slice 1 auth stub: a throwaway token, and a fresh tenant for this run.
-export DEV_AUTH_TOKEN=$(openssl rand -hex 32) DEV_TENANT_ID=$(uuidgen | tr A-Z a-z) DEV_ROLE_LEVEL=3
-echo "tenant for this run: $DEV_TENANT_ID"
+# A fresh tenant for this run, and a token for it from the issuer (step 11). The API
+# verifies it against JWT_ISSUER (.env). Tokens last 15 minutes: run `retoken` when a
+# request gets a 401.
+export PYTHONPATH=services TENANT_ID=$(uuidgen | tr A-Z a-z)
+echo "tenant for this run: $TENANT_ID"
+retoken() { export TOKEN=$(uv run python scripts/issuer.py mint --tenant "$TENANT_ID" --role-level 3); }
+retoken
 
 # The API, in the background, on 127.0.0.1:8000, against production.
-PYTHONPATH=services uv run python -m api.local \
+uv run python -m api.local \
   --database-url-param /ragdp/prod/database_url_api --bucket "$BUCKET" > /tmp/ragdp-api.log 2>&1 &
 
 # Helpers. register <file> <external_id> prints the API's JSON response.
-api() { curl -sS -H "Authorization: Bearer $DEV_AUTH_TOKEN" -H 'content-type: application/json' "$@"; }
+api() { curl -sS -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' "$@"; }
 register() {
   api -X POST http://127.0.0.1:8000/v1/documents -d "$(jq -n \
     --arg e "$2" --arg f "$(basename "$1")" \
@@ -71,7 +75,7 @@ Same size, one byte changed, so only the checksum differs:
 ```bash
 cp $PDF /tmp/tampered.pdf && printf 'X' | dd of=/tmp/tampered.pdf bs=1 seek=1000 conv=notrunc 2>/dev/null
 put /tmp/tampered.pdf "$SUM" "$URL"; grep -o '<Code>[^<]*' /tmp/ragdp-put.xml
-aws s3api head-object --bucket "$BUCKET" --key "raw/$DEV_TENANT_ID/$DOC/v1/source.pdf" 2>&1 | tail -1
+aws s3api head-object --bucket "$BUCKET" --key "raw/$TENANT_ID/$DOC/v1/source.pdf" 2>&1 | tail -1
 ```
 
 Expected: `400`, `<Code>BadDigest`, and `head-object` reports `Not Found`: S3 stored nothing, so nothing was ingested.
@@ -99,7 +103,7 @@ Expected: `version` 1, `duplicate` true, `status` `indexed`, `upload` null; `doc
 Send the worker the same job again, as if SQS had delivered it twice:
 
 ```bash
-KEY="raw/$DEV_TENANT_ID/$DOC/v1/source.pdf"
+KEY="raw/$TENANT_ID/$DOC/v1/source.pdf"
 ETAG=$(aws s3api head-object --bucket "$BUCKET" --key "$KEY" --query ETag --output text | tr -d '"')
 aws sqs send-message --queue-url "$QUEUE" --message-body "$(jq -nc \
   --arg b "$BUCKET" --arg k "$KEY" --arg e "$ETAG" --argjson n "$(stat -f%z $PDF)" \
@@ -139,7 +143,7 @@ kill %1   # stop the local API
 ```
 
 - **Purge the DLQ once you've seen the alarm** (`aws sqs purge-queue --queue-url "$DLQ"`). While a message sits there the alarm stays in `ALARM`, and it emails only on a change of state, so a real failure later would send no new email. Purging deletes the message permanently.
-- The run's rows (tenant `$DEV_TENANT_ID`) and S3 objects stay in production: there's no delete endpoint yet (Slice 2). They're small, and the tenant ID is printed at the start, so they can be found later.
+- The run's rows (tenant `$TENANT_ID`) and S3 objects stay in production: there's no delete endpoint yet (Slice 2). They're small, and the tenant ID is printed at the start, so they can be found later.
 
 ## Results
 

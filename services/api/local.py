@@ -1,19 +1,22 @@
-"""Serve the API on this laptop (Slice 1; Slice 2 puts it on Lambda).
+"""Serve the API on this laptop (step 13 puts it on Lambda).
 
     PYTHONPATH=services uv run python -m api.local                     # dev branch, from .env
     PYTHONPATH=services uv run python -m api.local \\
         --database-url-param /ragdp/prod/database_url_api --bucket <raw bucket>   # production
 
-Listens on 127.0.0.1 only: the Slice 1 auth stub is one shared token, so the API must not be
-reachable from the network. Presigned URLs are signed with your `aws login` session, so they
-stop working when that session ends, even inside their 15 minutes.
+Requests need a token from `scripts/issuer.py mint`. With no API Gateway in front, the API
+verifies it itself against JWT_ISSUER's published keys (api/auth.py). Listens on 127.0.0.1
+only: it's plain HTTP, for this laptop. Presigned URLs are signed with your `aws login`
+session, so they stop working when that session ends, even inside their 15 minutes.
 
 The flags override .env, so a production run can't silently use the dev branch's URL.
 Dev only: never used on Lambda.
 """
 
 import argparse
+import logging
 import os
+import sys
 
 import uvicorn
 from dotenv import load_dotenv
@@ -34,6 +37,10 @@ def main() -> None:
         os.environ["DATABASE_URL_API_PARAM"] = args.database_url_param
     if args.bucket:
         os.environ["RAW_BUCKET"] = args.bucket
+    if not os.environ.get("JWT_ISSUER", "").strip():
+        sys.exit("JWT_ISSUER is not set: put the issuer URL in .env (see .env.example)")
+    # Shows the app's own log lines too, such as why a token got a 401 (api/auth.py).
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s: %(message)s")
     uvicorn.run(create_app, factory=True, host="127.0.0.1", port=args.port)
 
 

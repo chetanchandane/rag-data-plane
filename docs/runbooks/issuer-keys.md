@@ -66,4 +66,4 @@ aws cloudfront create-invalidation --profile ragdp \
   --paths "/.well-known/*"
 ```
 
-API Gateway's own cache can't be flushed. Whether the API also verifies tokens itself (and so refuses a retired key sooner) is decided in step 12.
+API Gateway's own cache can't be flushed, and the API on Lambda doesn't verify tokens again (DECISIONS 2026-11-21, "Step 12"), so for up to 2 hours whoever has the leaked key can mint tokens that API Gateway accepts. If that window is too long, stop the API until the cache has refreshed: once step 13 exists, set the API Lambda's reserved concurrency to 0, then remove the setting afterwards. A locally run API (`api.local`) caches the JWKS for 5 minutes only.

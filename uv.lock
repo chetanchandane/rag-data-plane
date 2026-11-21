@@ -735,7 +735,6 @@ dependencies = [
     { name = "opentelemetry-sdk" },
     { name = "pgvector" },
     { name = "pydantic" },
-    { name = "pyjwt", extra = ["crypto"] },
     { name = "pymupdf" },
 ]
 
@@ -745,6 +744,7 @@ dev = [
     { name = "botocore", extra = ["crt"] },
     { name = "httpx" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "python-dotenv" },
@@ -761,7 +761,6 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.45.2" },
     { name = "pgvector", specifier = ">=0.5.1" },
     { name = "pydantic", specifier = ">=2.14.3" },
-    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.1" },
     { name = "pymupdf", specifier = ">=1.28.2,<2" },
 ]
 
@@ -771,6 +770,7 @@ dev = [
     { name = "botocore", extras = ["crt"], specifier = ">=1.44.5" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.9" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.1" },
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "pytest-asyncio", specifier = ">=1.5.0" },
     { name = "python-dotenv", specifier = ">=1.2.4" },
