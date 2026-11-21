@@ -370,6 +370,10 @@ data "aws_iam_policy_document" "deploy" {
       "apigateway:PUT",
       "apigateway:PATCH",
       "apigateway:DELETE",
+      # Creating a stage with tags is also authorized as TagResource (the first deploy was
+      # refused without it), though AWS's IAM reference maps tagging to the verbs above.
+      "apigateway:TagResource",
+      "apigateway:UntagResource",
     ]
     resources = [
       "arn:aws:apigateway:${local.region}::/apis/*",

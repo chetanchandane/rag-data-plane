@@ -30,6 +30,7 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
   - **Creating an API** (`apigateway:POST` on `/apis`) requires the request tag `Project = ragdp`.
   - **Changing an API** and its stages, routes, integrations, authorizers and tags is allowed on any HTTP API in us-east-2. AWS's IAM reference doesn't confirm that those sub-resources carry the API's tags, and this account runs only this project.
   - **Logs:** the role gets the `/aws/apigateway/ragdp-*` log groups, plus the log-delivery actions AWS lists for turning on access logging, which can't be scoped to a resource.
+  - **Tagging is also authorized as `apigateway:TagResource` and `apigateway:UntagResource`.** The first deploy was refused `apigateway:TagResource` when creating the tagged stage, although AWS's IAM reference maps tagging to the HTTP verbs. Both are allowed on the same resources as the verbs.
 - **`deploy.yml` builds and pushes both images** with the same SHA tag, and checks that both functions run it.
   - **First deploy:** a targeted apply creates the `ragdp-api` ECR repository before the first push (`infra/envs/prod/README.md`).
   - **Image size:** the API image still installs the worker-only PyMuPDF, because the runtime dependencies are one list. It's left as is: image Lambdas load lazily, so size matters little for cold starts.
