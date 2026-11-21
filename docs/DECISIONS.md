@@ -2,6 +2,38 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-21: Step 13 API on Lambda
+
+- **Routes need scopes, checked by API Gateway before the Lambda runs** (Chetan, 2026-11-21). `POST /v1/documents` needs `documents:write` and `GET /v1/documents/{id}` needs `documents:read`. A token passes if its `scope` claim includes the route's scope.
+  - **Why:** scopes are coarse API permissions at the edge. Which rows a caller sees is still decided by `role_level` and RLS. Adding scopes later would break every client token.
+  - **Locally (`api.local`) scopes aren't checked:** the API's own verifier checks the token, not routes. Mint with `--scope documents:read --scope documents:write` for the deployed API.
+- **`GET /v1/whoami`** returns `{tenant_id, role_level}` from `get_claims()`. It needs a valid token but no scope and no database. It proves the token path end to end, and lets a client check a token. It stays after Slice 2.
+- **The HTTP API has only explicit routes,** so an unknown path gets a 404 from API Gateway and never invokes the Lambda. Every route uses the JWT authorizer, whose issuer is `module.issuer`'s URL and whose audience is `rag-data-plane`. There's no CORS (no UI) and no custom domain.
+- **The stage throttles all routes to 10 requests/s, burst 20** (SPEC: Auth at the edge).
+- **Access logs are one JSON line per request** in `/aws/apigateway/ragdp-api`, kept 14 days. They include `authorizerError` and `integrationStatus`: an empty `integrationStatus` means the Lambda wasn't invoked. They also include the claims `sub`, `tenant_id` and `jti`, never the token.
+- **Only this API may invoke the function** (a resource policy on its execution ARN). That's what makes trusting the event's claims safe (step 12).
+- **The Lambda has 1024 MB and a 15 s timeout, with no reserved concurrency** (Chetan, 2026-11-21).
+  - **Memory:** more memory means more CPU, so a faster cold start, for pennies at this traffic.
+  - **Timeout:** 15 s covers today's routes; step 15 may raise it for the LLM, up to API Gateway's 30 s.
+  - **Concurrency:** the account limit of 10 allows no reservation (step 8); the stage throttle caps the rate instead.
+- **Mangum 0.22 is added as a runtime dependency** (Chetan, 2026-11-21). It puts the event in the ASGI scope as `aws.event`, which `get_claims()` reads.
+  - **Its lifespan support is off.** Mangum runs the app's lifespan around every invocation (`adapter.py`), which would open and close the DB pool per request.
+  - **Instead, `api/handler.py` opens the resources once per container,** on the first invocation, on one event loop it owns. If opening fails, the invocation fails, and the next one tries again.
+  - **Rejected:** AWS Lambda Web Adapter. It passes the request context in a header, not the scope, so step 12's `get_claims()` would have to change.
+- **The DB pool is reused across warm invocations, as the SPEC says, and fails fast** (Chetan, 2026-11-21). The worker opens a fresh pool per invocation instead (step 8).
+  - **Why reuse:** it saves a TLS and auth handshake on every warm request, which matters for `/v1/retrieve`'s 400 ms p95.
+  - **The risk:** a connection can die while Lambda freezes the container.
+  - **After an idle gap of more than 60 s, the handler calls `pool.expire_connections()`** before the request, so every connection is replaced on its next acquire. This doesn't rely on asyncpg's idle timer, which can't run while the container is frozen.
+  - **A backstop:** the API pool has a client-side `command_timeout` of 3 s (above the 2 s `statement_timeout`) and a 10 s connect timeout.
+  - **Connection failures and timeouts get a 503 with `Retry-After: 1`,** logged with the error type: `PostgresConnectionError`, `CannotConnectNowError`, `TooManyConnectionsError`, `QueryCanceledError`, `TimeoutError` and `ConnectionError`. Everything else stays a 500. The rest of SPEC's timeouts and fallbacks are Slice 3.
+- **The deploy role gains HTTP APIs** in bootstrap, which Chetan applies.
+  - **Creating an API** (`apigateway:POST` on `/apis`) requires the request tag `Project = ragdp`.
+  - **Changing an API** and its stages, routes, integrations, authorizers and tags is allowed on any HTTP API in us-east-2. AWS's IAM reference doesn't confirm that those sub-resources carry the API's tags, and this account runs only this project.
+  - **Logs:** the role gets the `/aws/apigateway/ragdp-*` log groups, plus the log-delivery actions AWS lists for turning on access logging, which can't be scoped to a resource.
+- **`deploy.yml` builds and pushes both images** with the same SHA tag, and checks that both functions run it.
+  - **First deploy:** a targeted apply creates the `ragdp-api` ECR repository before the first push (`infra/envs/prod/README.md`).
+  - **Image size:** the API image still installs the worker-only PyMuPDF, because the runtime dependencies are one list. It's left as is: image Lambdas load lazily, so size matters little for cold starts.
+
 ## 2026-11-21: Step 12 claims in the API
 
 - **On Lambda, the API trusts the claims API Gateway's JWT authorizer verified** (Chetan, 2026-11-21). It doesn't verify the token again.

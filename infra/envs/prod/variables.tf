@@ -20,6 +20,11 @@ variable "worker_image_tag" {
   type        = string
 }
 
+variable "api_image_tag" {
+  description = "API image tag in ECR. The deploy workflow passes the git SHA."
+  type        = string
+}
+
 variable "upload_cors_origins" {
   description = "Browser origins allowed to upload with presigned PUTs."
   type        = list(string)

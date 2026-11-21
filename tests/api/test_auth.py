@@ -316,7 +316,7 @@ def test_the_api_and_the_worker_import_without_pyjwt():
     # Lambda must not import it. A fresh interpreter, so other tests' imports don't count.
     services = Path(__file__).resolve().parents[2] / "services"
     code = (
-        "import sys, api.app, api.auth, api.documents, worker.handler; "
+        "import sys, api.handler, api.auth, api.documents, worker.handler; "
         "loaded = sorted(m for m in ('jwt', 'cryptography') if m in sys.modules); "
         "print(','.join(loaded))"
     )

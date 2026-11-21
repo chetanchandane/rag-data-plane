@@ -30,7 +30,8 @@ export DLQ=$(terraform -chdir=infra/envs/prod output -raw dlq_url)
 # request gets a 401.
 export PYTHONPATH=services TENANT_ID=$(uuidgen | tr A-Z a-z)
 echo "tenant for this run: $TENANT_ID"
-retoken() { export TOKEN=$(uv run python scripts/issuer.py mint --tenant "$TENANT_ID" --role-level 3); }
+retoken() { export TOKEN=$(uv run python scripts/issuer.py mint --tenant "$TENANT_ID" --role-level 3 \
+  --scope documents:read --scope documents:write); }
 retoken
 
 # The API, in the background, on 127.0.0.1:8000, against production.

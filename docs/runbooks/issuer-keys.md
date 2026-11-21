@@ -42,7 +42,7 @@ TOKEN=$(uv run python scripts/issuer.py mint --tenant <uuid> --role-level 2)
 curl -H "Authorization: Bearer $TOKEN" ...
 ```
 
-Options: `--scope <name>` (repeatable), `--subject <name>` (default `local-dev`), `--check`. Tokens last 15 minutes.
+Options: `--scope <name>` (repeatable), `--subject <name>` (default `local-dev`), `--check`. Tokens last 15 minutes. The deployed API's routes need scopes: `documents:read` for `GET /v1/documents/{id}`, `documents:write` for `POST /v1/documents` (`whoami` needs none). The local API doesn't check scopes.
 
 ## Planned rotation
 

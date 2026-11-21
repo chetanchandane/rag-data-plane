@@ -49,15 +49,32 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
     await register_vector(conn)
 
 
-async def create_pool(dsn: str, *, min_size: int = 0, max_size: int = 2) -> asyncpg.Pool:
+async def create_pool(
+    dsn: str,
+    *,
+    min_size: int = 0,
+    max_size: int = 2,
+    command_timeout: float | None = None,
+    connect_timeout: float = 60,
+) -> asyncpg.Pool:
     """Create a connection pool for app_api or app_ingest.
 
-    Callers keep the pool at module scope so warm Lambda invocations reuse it. Defaults per
-    SPEC: min_size=0 (no idle connections held), max_size=2. The DSN should point at Neon's
-    pooled endpoint so many Lambda instances share few server connections.
+    Defaults per SPEC: min_size=0 (no idle connections held), max_size=2. The DSN should
+    point at Neon's pooled endpoint so many Lambda instances share few server connections.
+
+    command_timeout: a client-side limit on every query, in seconds (None: no limit). The
+    server's statement_timeout can't help when the connection itself is dead, for example
+    after Lambda froze the container; this makes such a query fail instead of hang.
+    connect_timeout: how long opening a connection may take, in seconds (asyncpg's default
+    is 60).
     """
     return await asyncpg.create_pool(
-        dsn, min_size=min_size, max_size=max_size, init=_init_connection
+        dsn,
+        min_size=min_size,
+        max_size=max_size,
+        init=_init_connection,
+        command_timeout=command_timeout,
+        timeout=connect_timeout,
     )
 
 

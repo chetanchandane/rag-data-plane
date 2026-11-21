@@ -1,5 +1,5 @@
-# Production stack: raw bucket, ingest path, secrets names, alarms and budget (Slice 1), and
-# the token issuer (step 11).
+# Production stack: raw bucket, ingest path, secrets names, alarms and budget (Slice 1), the
+# token issuer (step 11) and the API (step 13).
 # Applied by GitHub Actions through the bootstrap deploy role, or by Chetan from the laptop.
 
 terraform {
@@ -73,6 +73,23 @@ module "issuer" {
   jwks_json   = file("${path.module}/jwks.json")
 }
 
+# The API Lambda behind an HTTP API whose JWT authorizer trusts the issuer above.
+module "api" {
+  source                  = "../../modules/api"
+  name_prefix             = var.name_prefix
+  region                  = var.region
+  account_id              = var.account_id
+  api_image_tag           = var.api_image_tag
+  raw_bucket_name         = module.storage.bucket_name
+  raw_bucket_arn          = module.storage.bucket_arn
+  database_url_param_name = module.secrets.names.database_url_api
+  database_url_param_arn  = module.secrets.arns.database_url_api
+  jwt_issuer              = module.issuer.issuer_url
+  workload_role_path      = local.workload_role_path
+  workload_boundary_arn   = local.workload_boundary_arn
+  log_retention_days      = 14
+}
+
 module "observability" {
   source      = "../../modules/observability"
   name_prefix = var.name_prefix
@@ -96,8 +113,21 @@ output "worker_repository_url" {
   value = module.ingest.worker_repository_url
 }
 
+output "api_url" {
+  description = "Base URL of the API, e.g. $API_URL/v1/whoami."
+  value       = module.api.api_url
+}
+
+output "api_repository_url" {
+  value = module.api.api_repository_url
+}
+
+output "api_access_log_group" {
+  value = module.api.access_log_group
+}
+
 output "issuer_url" {
-  description = "JWT_ISSUER for scripts/issuer.py mint, and the authorizer's issuer (step 13)."
+  description = "JWT_ISSUER for scripts/issuer.py mint, and the JWT authorizer's issuer."
   value       = module.issuer.issuer_url
 }
 

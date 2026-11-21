@@ -1,10 +1,10 @@
 # Deploy (step 10d, DECISIONS 2026-11-20): called by ci.yml after the production migrations,
 # on pushes to main only, so the schema is always ready before new code runs.
 #
-# 1. Build and push the worker image, tagged with the commit SHA.
+# 1. Build and push the worker and API images, both tagged with the commit SHA.
 # 2. terraform plan for infra/envs/prod, then refuse the plan if it deletes or replaces
 #    anything (those changes are applied by hand after review, see infra/envs/prod/README.md).
-# 3. Apply exactly that plan, then check the worker Lambda runs the new image.
+# 3. Apply exactly that plan, then check both Lambdas run the new images.
 #
 # AWS access is the bootstrap deploy role through OIDC; no stored keys.
 # GitHub settings: environment `prod` (main only) with the secret ALERT_EMAIL.
@@ -24,8 +24,9 @@ permissions:
 
 env:
   REGISTRY: 905418224080.dkr.ecr.us-east-2.amazonaws.com
-  REPOSITORY: ragdp-worker
-  FUNCTION: ragdp-worker
+  # Each service's ECR repository and Lambda function are named ragdp-<service>, and its
+  # image is built from services/<service>/Dockerfile.
+  SERVICES: worker api
   TF_VERSION: "1.17.2"
 
 jobs:
@@ -67,24 +68,27 @@ jobs:
           role-session-name: deploy-${{ github.run_id }}
           aws-region: us-east-2
 
-      # Tags are immutable in ECR, so a rerun of this job finds its image already there and
-      # must not push again. Any error other than "not found" stops the job.
-      - name: Build and push the worker image
+      # Tags are immutable in ECR, so a rerun of this job finds its images already there and
+      # must not push them again. Any error other than "not found" stops the job.
+      - name: Build and push the images
         working-directory: .
         run: |
-          if out=$(aws ecr describe-images --repository-name "$REPOSITORY" \
-              --image-ids imageTag="$IMAGE_TAG" 2>&1); then
-            echo "Image $IMAGE_TAG is already in ECR; not building it again."
-            exit 0
-          elif ! grep -q ImageNotFoundException <<<"$out"; then
-            echo "$out"
-            exit 1
-          fi
           aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
-          # --provenance=false: Lambda rejects the image index that build attestations create.
-          docker build --platform linux/amd64 --provenance=false \
-            -f services/worker/Dockerfile -t "$REGISTRY/$REPOSITORY:$IMAGE_TAG" .
-          docker push "$REGISTRY/$REPOSITORY:$IMAGE_TAG"
+          for service in $SERVICES; do
+            repository="ragdp-$service"
+            if out=$(aws ecr describe-images --repository-name "$repository" \
+                --image-ids imageTag="$IMAGE_TAG" 2>&1); then
+              echo "$repository:$IMAGE_TAG is already in ECR; not building it again."
+              continue
+            elif ! grep -q ImageNotFoundException <<<"$out"; then
+              echo "$out"
+              exit 1
+            fi
+            # --provenance=false: Lambda rejects the image index that build attestations create.
+            docker build --platform linux/amd64 --provenance=false \
+              -f "services/$service/Dockerfile" -t "$REGISTRY/$repository:$IMAGE_TAG" .
+            docker push "$REGISTRY/$repository:$IMAGE_TAG"
+          done
 
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
@@ -95,7 +99,9 @@ jobs:
       - run: terraform init -lockfile=readonly
 
       - name: Terraform plan
-        run: terraform plan -var-file=prod.tfvars -var "worker_image_tag=${IMAGE_TAG}" -out=tfplan
+        run: >-
+          terraform plan -var-file=prod.tfvars
+          -var "worker_image_tag=${IMAGE_TAG}" -var "api_image_tag=${IMAGE_TAG}" -out=tfplan
 
       # A replacement is a delete plus a create, so both show up as "delete". The summary lists
       # addresses and actions only, never values.
@@ -118,10 +124,13 @@ jobs:
       - name: Terraform apply
         run: terraform apply tfplan
 
-      - name: Check the worker runs the new image
+      - name: Check both Lambdas run the new images
         run: |
-          aws lambda wait function-updated-v2 --function-name "$FUNCTION"
-          image=$(aws lambda get-function --function-name "$FUNCTION" \
-            --query Code.ImageUri --output text)
-          echo "Worker image: $image"
-          test "$image" = "$REGISTRY/$REPOSITORY:$IMAGE_TAG"
+          for service in $SERVICES; do
+            function="ragdp-$service"
+            aws lambda wait function-updated-v2 --function-name "$function"
+            image=$(aws lambda get-function --function-name "$function" \
+              --query Code.ImageUri --output text)
+            echo "$function image: $image"
+            test "$image" = "$REGISTRY/ragdp-$service:$IMAGE_TAG"
+          done

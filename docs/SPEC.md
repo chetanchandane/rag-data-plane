@@ -392,6 +392,7 @@ One SQL round trip does hybrid recall under RLS; everything after it has a timeo
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| GET | `/v1/whoami` | The caller's `tenant_id` and `role_level`, as the API received them (DECISIONS 2026-11-21, "Step 13") |
 | POST | `/v1/documents` | Register a document version, get a presigned upload URL |
 | GET | `/v1/documents/{id}` | Version status, attempts, last error |
 | POST | `/v1/documents/{id}/reindex` | Enqueue a `reindex` job |
@@ -443,7 +444,7 @@ LIMIT 30;
 **asyncpg details**
 
 - Register the pgvector codec on pool init (`pgvector.asyncpg.register_vector`) and pass embeddings as arrays, never as formatted strings.
-- Create the pool at module scope so warm Lambda invocations reuse it; `min_size=0`, `max_size=2`. Use Neon's pooled endpoint so many Lambda instances share few server connections.
+- Create the pool at module scope so warm Lambda invocations reuse it; `min_size=0`, `max_size=2`. Use Neon's pooled endpoint so many Lambda instances share few server connections. After an idle gap of more than 60 s the API replaces the pool's connections before the request, since they may have died while Lambda froze the container (DECISIONS 2026-11-21, "Step 13").
 - If the pooler rejects prepared statements, set `statement_cache_size=0`. Measure the latency cost rather than guessing.
 - `rls_transaction(conn, tenant_id, role_level)` in `services/shared/db.py` is the only place the context is set. It sets tenant, role and `statement_timeout` in one `set_config(..., true)` call and refuses to nest.
 - `role_level` is required, with no default. The API always passes the claims' role (1 to 3). The worker passes `None`: `app.role_level` is then not set, `app_role_level()` returns 0, and anything role-checked sees zero rows.
@@ -546,7 +547,7 @@ scripts/                  # issuer.py: token issuer keys and minting (laptop onl
 }
 ```
 
-**Auth at the edge.** The HTTP API's JWT authorizer validates issuer, audience and expiry against the control plane's JWKS before any Lambda runs. Until a control plane exists, a static issuer in this repo stands in for it; the issuer URL and audience are Terraform variables (DECISIONS 2026-11-21). The app reads the claims the authorizer passes on for RLS, without verifying the token again; locally, with no API Gateway in front, it verifies the token itself (DECISIONS 2026-11-21, "Step 12"). Route throttling (for example 10 requests/s, burst 20) protects the model budget; a per-tenant daily token quota in Postgres is the second layer.
+**Auth at the edge.** The HTTP API's JWT authorizer validates issuer, audience and expiry against the control plane's JWKS before any Lambda runs. Until a control plane exists, a static issuer in this repo stands in for it; the issuer URL and audience are Terraform variables (DECISIONS 2026-11-21). The app reads the claims the authorizer passes on for RLS, without verifying the token again; locally, with no API Gateway in front, it verifies the token itself (DECISIONS 2026-11-21, "Step 12"). Routes also require a scope in the token's `scope` claim (`documents:read`, `documents:write`; DECISIONS 2026-11-21, "Step 13"). Route throttling (10 requests/s, burst 20) protects the model budget; a per-tenant daily token quota in Postgres is the second layer.
 
 **Monthly cost (approximate, demo traffic)**
 

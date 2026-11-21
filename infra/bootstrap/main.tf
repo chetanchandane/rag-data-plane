@@ -178,10 +178,11 @@ resource "aws_iam_role" "deploy" {
   max_session_duration = 3600
 }
 
-# What `terraform apply` in infra/envs/prod needs (storage, ingest, observability, issuer).
-# Every statement is limited to the project's resources in this account: by name prefix where
-# the resource has a name, by the Project tag where it has only a random id. The API module
-# (step 13) adds API Gateway here when it exists.
+# What `terraform apply` in infra/envs/prod needs (storage, ingest, observability, issuer,
+# api). Every statement is limited to the project's resources in this account: by name prefix
+# where the resource has a name, by the Project tag where it has only a random id. The
+# exceptions are said where they are (origin access controls, HTTP API changes, log
+# delivery).
 data "aws_iam_policy_document" "deploy" {
   statement {
     sid       = "StateList"
@@ -323,6 +324,56 @@ data "aws_iam_policy_document" "deploy" {
     resources = [
       "arn:aws:logs:${local.region}:${local.account}:log-group:/aws/lambda/${local.p}-*",
       "arn:aws:logs:${local.region}:${local.account}:log-group:/aws/lambda/${local.p}-*:*",
+      # The HTTP API's access logs (step 13).
+      "arn:aws:logs:${local.region}:${local.account}:log-group:/aws/apigateway/${local.p}-*",
+      "arn:aws:logs:${local.region}:${local.account}:log-group:/aws/apigateway/${local.p}-*:*",
+    ]
+  }
+
+  # API Gateway delivers the HTTP API's access logs as the principal that configures them,
+  # which needs these (AWS: "Configuring logging for an HTTP API"). AWS allows no resource
+  # scoping for them.
+  statement {
+    sid = "ApiAccessLogDelivery"
+    actions = [
+      "logs:CreateLogDelivery",
+      "logs:GetLogDelivery",
+      "logs:UpdateLogDelivery",
+      "logs:DeleteLogDelivery",
+      "logs:ListLogDeliveries",
+      "logs:PutResourcePolicy",
+      "logs:DescribeResourcePolicies",
+    ]
+    resources = ["*"]
+  }
+
+  # HTTP APIs (step 13, DECISIONS 2026-11-21). Creating one requires the Project tag, which
+  # default_tags sets. Changing an API, its stages, routes, integrations and authorizers is
+  # allowed on any HTTP API in this Region: AWS doesn't document that those sub-resources
+  # carry the API's tags, and this account runs only this project.
+  statement {
+    sid       = "CreateProjectHttpApis"
+    actions   = ["apigateway:POST"]
+    resources = ["arn:aws:apigateway:${local.region}::/apis"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = [local.p]
+    }
+  }
+
+  statement {
+    sid = "ManageHttpApis"
+    actions = [
+      "apigateway:GET",
+      "apigateway:POST",
+      "apigateway:PUT",
+      "apigateway:PATCH",
+      "apigateway:DELETE",
+    ]
+    resources = [
+      "arn:aws:apigateway:${local.region}::/apis/*",
+      "arn:aws:apigateway:${local.region}::/tags/*",
     ]
   }
 

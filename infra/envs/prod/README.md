@@ -38,9 +38,23 @@ The Lambda needs an image in ECR, and the ECR repository is part of this stack. 
 4. **Apply everything:** `terraform apply -var-file=prod.tfvars -var worker_image_tag=<sha>`.
 5. **Confirm the subscription email** AWS sends to `alert_email`. Alarms aren't delivered until you do.
 
+## Adding the API (step 13, once)
+
+Same reason as above: the API Lambda needs an image in a repository this stack creates. CI builds the image once the repository exists.
+
+1. **Apply bootstrap** (the deploy role gains HTTP APIs): `AWS_PROFILE=ragdp terraform -chdir=infra/bootstrap apply`.
+2. **Create only the API's repository**, with the worker tag that's deployed now:
+   ```bash
+   TAG=$(aws lambda get-function --profile ragdp --function-name ragdp-worker \
+     --query Code.ImageUri --output text | sed 's/.*://')
+   AWS_PROFILE=ragdp TF_VAR_alert_email=you@example.com terraform apply -var-file=prod.tfvars \
+     -var worker_image_tag=$TAG -var api_image_tag=none -target=module.api.aws_ecr_repository.api
+   ```
+3. **Push to `main`.** CI builds and pushes both images and applies the rest of the stack.
+
 ## Every deploy after that
 
-A push to `main` deploys by itself (`.github/workflows/deploy.yml`, called by `ci.yml` after the production migrations). It builds and pushes the image tagged with the commit SHA, plans, and applies that plan.
+A push to `main` deploys by itself (`.github/workflows/deploy.yml`, called by `ci.yml` after the production migrations). It builds and pushes the worker and API images tagged with the commit SHA, plans, and applies that plan.
 
 The deploy **refuses any plan that deletes or replaces a resource**. For one of those, review and apply it from the laptop with the tag that's currently deployed (the plan error lists the resources):
 
@@ -48,11 +62,27 @@ The deploy **refuses any plan that deletes or replaces a resource**. For one of 
 TAG=$(aws lambda get-function --profile ragdp --function-name ragdp-worker \
   --query Code.ImageUri --output text | sed 's/.*://')
 AWS_PROFILE=ragdp TF_VAR_alert_email=you@example.com \
-  terraform apply -var-file=prod.tfvars -var worker_image_tag=$TAG
+  terraform apply -var-file=prod.tfvars -var worker_image_tag=$TAG -var api_image_tag=$TAG
 ```
 
-Then push again (or rerun the failed job) so CI deploys the new image.
+Both images carry the same tag, so one `TAG` serves both. Then push again (or rerun the failed job) so CI deploys the new images.
 
 ## Token issuer
 
 `jwks.json` here holds the issuer's public keys; `scripts/issuer.py` writes it and Terraform publishes it, so planning this stack needs the file. Creating, rotating and retiring keys, and the waits between those steps: `docs/runbooks/issuer-keys.md`.
+
+## Calling the API
+
+```bash
+export PYTHONPATH=services API_URL=$(terraform -chdir=infra/envs/prod output -raw api_url)
+TOKEN=$(uv run python scripts/issuer.py mint --tenant <uuid> --role-level 2 \
+  --scope documents:read --scope documents:write)
+curl -sS -H "Authorization: Bearer $TOKEN" "$API_URL/v1/whoami"
+```
+
+API Gateway refuses a missing, expired or wrong-audience token (401) and a token without the route's scope (403) before the Lambda runs. The access log shows each request's `authorizerError`, and an empty `integrationStatus` when the Lambda wasn't invoked:
+
+```bash
+aws logs tail "$(terraform -chdir=infra/envs/prod output -raw api_access_log_group)" \
+  --since 15m --profile ragdp --region us-east-2
+```

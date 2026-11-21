@@ -62,7 +62,7 @@ uv run pytest -m db                   # DB tests against the Neon dev branch
 uv run python db/bootstrap.py         # once per dev branch: roles, schema grants, vector extension
 uv run alembic upgrade head           # migrations (uses DATABASE_URL_OWNER)
 PYTHONPATH=services uv run python -m worker.local <pdf> --tenant <uuid> --doc <uuid> --version 1  # one local ingest (real Bedrock)
-PYTHONPATH=services uv run python scripts/issuer.py mint --tenant <uuid> --role-level 2  # a 15-minute access token
+PYTHONPATH=services uv run python scripts/issuer.py mint --tenant <uuid> --role-level 2 --scope documents:read --scope documents:write  # a 15-minute access token
 terraform -chdir=infra/envs/prod fmt -recursive && terraform -chdir=infra/envs/prod validate
 ```
 
