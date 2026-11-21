@@ -123,7 +123,30 @@ Work these in order. Each one is a separate session or prompt. Tick them off her
   - [x] **10e. Traces.** OpenTelemetry spans for parse, chunk and embed, sent to a free backend (SPEC: Architecture, Telemetry).
     *Done when:* a trace shows those spans with durations, and every Slice 1 box is ticked.
 
-Slices 2 to 4 get their own step list here once Slice 1 is done.
+## Build plan: Slice 2 (query path and isolation)
+
+Same rules as Slice 1. The token issuer comes first because everything after it uses real tokens (DECISIONS 2026-11-21, "Token issuer for Slice 2"). Where a step says "settle first", agree it and record it in DECISIONS before writing code.
+
+- [ ] **11. Token issuer.** `scripts/issuer_keys.py` makes the RSA key pair. The private key goes straight to SSM (`/ragdp/prod/jwt_signing_key`), never to disk or Terraform state; the public JWKS is committed. A Terraform module serves the discovery document and the JWKS publicly over HTTPS. `scripts/mint_token.py --tenant <uuid> --role-level N`. A key rotation runbook. Settle first: public-read S3 objects or CloudFront with origin access control.
+  *Done when:* both documents are reachable over HTTPS, and a minted token verifies with PyJWT against the published JWKS (signature, `iss`, `aud`, `exp`). Chetan applies.
+- [ ] **12. Real claims in the API.** `get_claims()` verifies RS256 tokens with PyJWT against the issuer's JWKS (fetched once and cached, fetched again for an unknown `kid`). It requires `tenant_id` (a UUID) and `role_level` (1 to 3). The dev stub and its settings are removed. Settle first: whether the API on Lambda verifies the token too, or reads the claims API Gateway already verified. If it trusts API Gateway's claims, move `pyjwt[crypto]` out of the Lambda image's dependencies (local runs and tests still need it) to keep the image lean.
+  *Done when:* tests with a throwaway key reject an expired token, a not-yet-valid one, the wrong issuer, the wrong audience, an unknown `kid`, `alg: none` and HS256, and missing or out-of-range claims. The existing endpoint tests pass with minted tokens, and the 10b runbook works locally with a minted token.
+- [ ] **13. API on Lambda.** `infra/modules/api`: the API Lambda (image, Mangum), the HTTP API and routes, the JWT authorizer (issuer and audience from variables), route throttling (10 requests/s, burst 20) and access logs. `deploy.yml` builds and pushes both images. A minimal JWT-protected route, `GET /v1/whoami`, returns the claims the API received, so the real authorizer and claim forwarding are tested end to end before `/v1/retrieve` exists (record it in DECISIONS and the SPEC endpoints table).
+  *Done when:* `GET /v1/whoami` through the deployed API returns the minted token's `tenant_id` and `role_level`, a minted token registers a document, and a missing, expired or wrong-audience token gets a 401 from API Gateway without invoking the Lambda.
+- [ ] **14. `/v1/retrieve`.** The query embedding (Titan), the hybrid RRF SQL from SPEC under `rls_transaction`, and the lexical-weight rule. Reranking is an option, off for the leak matrix. Spans for `embed`, `sql_recall` and `rerank`.
+  *Done when:* DB tests with fixed embeddings show RRF ordering, only live versions, and nothing from another tenant or above the caller's role level. Unit tests cover the lexical-weight rule.
+- [ ] **15. `/v1/query`.** Rerank, the abstain gate, the prompt with `<document>` tags, structured JSON from the LLM, citation validation and the SPEC response schema. Spans for `abstain_gate`, `llm_generate` and `citation_check`. Settle first: the primary and secondary LLM, the Cohere key's terms and cost (Open decision #7), and the starting abstain threshold. Timeouts, fallbacks and the cache are Slice 3.
+  *Done when:* unit tests with fakes cover each citation rule, the abstain path and malformed LLM output, and one opt-in `paid` test answers a question from a real document.
+- [ ] **16. Eval corpus and personas.** In `eval/golden/`: ClinRAG's FDA/ICH corpus and 294-question golden set, a small synthetic corpus for a second tenant, canary documents per tenant and role level, the prompt-injection document and the 6 personas. A script loads it all through the real ingest path. Settle first: where the ClinRAG files come from, and which Neon branch holds the corpus.
+  *Done when:* the corpus is indexed on that branch and the golden set files are committed.
+- [ ] **17. Leak matrix in CI.** Every golden question as every persona through `/v1/retrieve` with reranking off, plus the extraction questions. The canary check and the structural check; a leak count above 0 fails the build. A sampled `/v1/query` subset runs opt-in. The canary results go in the README. Settle first: CI has no Bedrock access, so the question embeddings are computed once and committed as a fixture, and CI calls no paid API. Only the embeddings are precomputed: the matrix still runs the real SQL against real Postgres + pgvector with RLS enabled, connected as `app_api`.
+  *Done when:* CI passes with 0 leaks, and a deliberately broken policy on a branch makes it fail.
+- [ ] **18. Eval baseline.** `eval.yml` and the metrics in SPEC: Proof, "Quality gate". Results are saved to `eval/results/<date>_<git-sha>.json` (DECISIONS 2026-11-16, "Planned experiment"). Settle first: the judge model for faithfulness and relevance, and its cost per run.
+  *Done when:* the first `main` baseline is committed and the ClinRAG comparison is written up.
+
+When step 18 is done, every Slice 2 box in SPEC: Slices is ticked (13 ticks the authorizer box, 14 and 15 the endpoints box, 17 the leak matrix box, 18 the eval box).
+
+Slices 3 and 4 get their own step list here once Slice 2 is done.
 
 <!-- BEGIN AWS Agent Toolkit rules -->
 

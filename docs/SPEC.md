@@ -543,7 +543,7 @@ load/                     # k6 scripts
 }
 ```
 
-**Auth at the edge.** The HTTP API's JWT authorizer validates issuer, audience and expiry against the control plane's JWKS before any Lambda runs. The app re-reads the claims for RLS. Route throttling (for example 10 requests/s, burst 20) protects the model budget; a per-tenant daily token quota in Postgres is the second layer.
+**Auth at the edge.** The HTTP API's JWT authorizer validates issuer, audience and expiry against the control plane's JWKS before any Lambda runs. Until a control plane exists, a static issuer in this repo stands in for it; the issuer URL and audience are Terraform variables (DECISIONS 2026-11-21). The app re-reads the claims for RLS. Route throttling (for example 10 requests/s, burst 20) protects the model budget; a per-tenant daily token quota in Postgres is the second layer.
 
 **Monthly cost (approximate, demo traffic)**
 
@@ -676,12 +676,12 @@ Post: the load test numbers and what would break first at 100x.
 
 ## Open decisions
 
-Decision 1 blocks Slice 2; decision 8 blocks the reindex endpoint; settle the others before the slice that needs them.
+Decision 8 blocks the reindex endpoint; settle the others before the slice that needs them.
 
 | # | Decision | Lean | Why |
 | --- | --- | --- | --- |
-| 1 | Token signing in rag-control-plane | RS256 + a public JWKS endpoint | API Gateway's JWT authorizer can't verify HS256 shared-secret tokens. Check what the control plane issues today |
-| 2 | Access token lifetime | 10 to 15 minutes | Bounds how long a revoked grant still works, in line with the control plane's 30 to 60 s grant cache |
+| 1 | Token signing in rag-control-plane | Decided: RS256 + a public JWKS; a stand-in static issuer in this repo until a control plane exists (DECISIONS 2026-11-21) | API Gateway's JWT authorizer supports only RSA algorithms, so HS256 shared-secret tokens can't be verified |
+| 2 | Access token lifetime | Decided: 15 minutes (DECISIONS 2026-11-21) | Bounds how long a revoked grant or a leaked token still works, in line with the control plane's 30 to 60 s grant cache |
 | 3 | Embedding model | Bedrock Titan Text Embeddings v2 (1024 dims) | IAM auth, no API key, AWS-native. If ClinRAG used a different model, the Qdrant vs pgvector comparison mixes two variables, so also run one pgvector eval with ClinRAG's model |
 | 4 | PDF parser | Decided: PyMuPDF only, tables via its own table finder (DECISIONS 2026-11-17) | Light enough for fast Lambda cold starts; one parser, one pass. Move to docling only if table questions score poorly |
 | 5 | Database | Neon now, RDS + RDS Proxy in the "At 100x" note | Zero idle cost, no NAT, built-in pooling and CI branches |

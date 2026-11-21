@@ -2,6 +2,38 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-21: Token issuer for Slice 2 (Open decisions #1 and #2)
+
+- **Decision #1** (approved 2026-11-21): rag-control-plane doesn't exist yet, so this repo builds a minimal stand-in issuer for the data plane to trust:
+  - **RS256** with one RSA key pair. The private key is an SSM SecureString under `/ragdp/prod/`; the public key is published as a JWKS with a `kid`.
+  - An **OIDC discovery document** (`/.well-known/openid-configuration`) and the **JWKS** it points to, served publicly over HTTPS.
+  - **`scripts/mint_token.py`** signs tokens with `iss`, `aud` = `rag-data-plane`, `sub`, `tenant_id`, `role_level`, `scopes`, `iat` and `exp`. Reading the private key needs Chetan's MFA sign-in; no CI role can read it.
+  - **The issuer URL and audience are Terraform variables.** A real control plane, Cognito or Auth0 later replaces the stand-in without a code change.
+- **Why:**
+  - SPEC's boundary is that the control plane decides who may do what, and the data plane only verifies the claims it's handed. What Slice 2 needs is a real issuer to verify against, not a login system.
+  - API Gateway's JWT authorizer does the real verification (signature, `iss`, `aud`, `exp`), so the production path is exercised, not mocked.
+  - It costs nothing to run: a few public objects and no compute.
+- **Decision #2:** access tokens live **15 minutes**. There is no revocation, so the expiry is the limit on how long a leaked token works.
+- **Trade-offs, accepted:**
+  - Whoever can read the signing key can mint a token for any tenant. That's what an issuer is; today it's only Chetan.
+  - Key rotation is by hand, with a runbook: publish the new key beside the old one, switch the signer, and remove the old key only after the last old token has expired *and* API Gateway's JWKS cache (up to 2 hours) has refreshed.
+- **Rejected:**
+  - **Cognito user pool.** User management is control-plane work. Custom claims in *access* tokens need a pre-token-generation Lambda and a paid feature tier, and machine-to-machine tokens are billed.
+  - **Auth0 or Clerk.** Same trade as Cognito, plus an outside account. No gain here.
+  - **A Lambda authorizer with HS256.** A shared secret and a Lambda in front of every request; the reason #1 leaned to RS256.
+  - **Keeping the dev stub.** It fails the Slice 2 box "API Gateway JWT authorizer verifies control-plane tokens via JWKS".
+- **Checked in AWS's HTTP API JWT authorizer docs (2026-11-21):**
+  - Only RSA-based algorithms are supported.
+  - The token's `kid` header must match a key in the issuer's `jwks_uri`.
+  - `iss` must equal the configured issuer. `aud` must match one of the configured audiences, and `client_id` is checked only when there is no `aud`.
+  - `exp` must be in the future; `nbf` and `iat` must be in the past.
+  - A route's `authorizationScopes` are matched against the `scope` or `scp` claim.
+  - The public key is cached for up to two hours.
+  - **Not stated:** that the `jwks_uri` is found through `{issuer}/.well-known/openid-configuration`. Publishing the discovery document covers that path, and the step that deploys the authorizer proves it with a real token.
+- **Dependency:** `PyJWT[crypto]` (approved 2026-11-21), which pulls in `cryptography`. It is a runtime dependency, not dev-only: the API verifies tokens itself when it runs locally without API Gateway. It also signs tokens in the minting script and in tests, which use a throwaway key and need no network.
+  - **`cryptography` 50.0.2 is built from source on Intel Macs** (approved 2026-11-21). From version 49 it ships no macOS x86_64 wheel, so `uv` compiles it locally (about 3 minutes, cached until the next upgrade). The build backend downloaded a Rust toolchain into `~/Library/Caches/puccinialin`, and the result links Homebrew's `openssl@3`. CI and Lambda (Linux x86_64) install the published wheel.
+    - **Why:** the same version runs on the laptop and in production. Pinning `<49` only on Intel Macs was rejected because local and production would then run different versions of a security library. Pinning `<49` everywhere was rejected because production would miss security fixes.
+
 ## 2026-11-19: Step 10 is split into 10a to 10e
 
 - **Decision** (approved 2026-11-19): step 10 becomes five steps, each with its own "done when" and commit: 10a production database and first deploy, 10b end-to-end run by hand, 10c CI, 10d deploys, 10e traces. Listed in `CLAUDE.md`.

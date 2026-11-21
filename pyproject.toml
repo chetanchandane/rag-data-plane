@@ -12,6 +12,7 @@ dependencies = [
     "opentelemetry-sdk>=1.45.2",
     "pgvector>=0.5.1",
     "pydantic>=2.14.3",
+    "pyjwt[crypto]>=2.15.1",
     "pymupdf>=1.28.2,<2",
 ]
 
