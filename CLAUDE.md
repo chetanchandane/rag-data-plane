@@ -110,7 +110,7 @@ Work these in order. Each one is a separate session or prompt. Tick them off her
   *Done when:* `plan` is clean and matches SPEC queue settings. Chetan applies it.
 - [x] **9. API endpoints.** `POST /v1/documents` (register + presigned PUT requiring `x-amz-checksum-sha256`) and `GET /v1/documents/{id}`.
   *Done when:* endpoint tests pass, including the duplicate-upload case, a body carrying another tenant's `tenant_id` (the claims' tenant must be used), and a concurrency test: two simultaneous registrations of new content for the same document both succeed with distinct version numbers (see DECISIONS, "Concurrent version allocation").
-- [ ] **10. End to end.** Register, upload with `curl`, watch status reach `indexed`; upload a corrupt PDF and watch it reach the DLQ. Split into 10a to 10e (DECISIONS 2026-11-19, "Step 10 is split").
+- [x] **10. End to end.** Register, upload with `curl`, watch status reach `indexed`; upload a corrupt PDF and watch it reach the DLQ. Split into 10a to 10e (DECISIONS 2026-11-19, "Step 10 is split").
   *Done when:* every Slice 1 box in SPEC: Slices is ticked.
   - [x] **10a. Production database and first deploy.** Neon's `main` branch becomes production (dev tests stay on the `dev` branch): roles, migrations and role passwords that exist only in SSM (`db/bootstrap.py --production`). Then the first deploy in `infra/envs/prod/README.md`.
     *Done when:* the DB suite passes on the `dev` branch, the prod `plan` shows no changes after Chetan's apply, and the alert email is confirmed.
@@ -120,7 +120,7 @@ Work these in order. Each one is a separate session or prompt. Tick them off her
     *Done when:* a CI run passes and production's migrations are applied by CI.
   - [x] **10d. Deploys.** `deploy.yml`: a push to `main` builds and pushes the worker image and runs `terraform apply` through OIDC.
     *Done when:* a push to `main` deploys.
-  - [ ] **10e. Traces.** OpenTelemetry spans for parse, chunk and embed, sent to a free backend (SPEC: Architecture, Telemetry).
+  - [x] **10e. Traces.** OpenTelemetry spans for parse, chunk and embed, sent to a free backend (SPEC: Architecture, Telemetry).
     *Done when:* a trace shows those spans with durations, and every Slice 1 box is ticked.
 
 Slices 2 to 4 get their own step list here once Slice 1 is done.

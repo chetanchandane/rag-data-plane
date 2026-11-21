@@ -10,6 +10,7 @@ Proves these Slice 1 boxes (SPEC: Slices):
 | A 20-page PDF goes from upload to `indexed`, visible via `GET /v1/documents/{id}` | 4 |
 | Duplicate upload creates no new version; duplicate message creates no duplicate chunks | 5, 6 |
 | Corrupt PDF ends in the DLQ with status `failed`, and the alarm fires | 7 |
+| Traces show parse, chunk and embed spans with durations (step 10e) | 4, then Honeycomb dataset `ragdp-worker` |
 
 Cost: a few cents of Bedrock embeddings; the rest is inside the free tiers.
 
@@ -160,3 +161,17 @@ Run by Claude Code at Chetan's request; tenant `0646d226-024a-40d8-80f4-eed468bb
 Noticed:
 - The worker used 184 MB of its 2048 MB. Memory also sets Lambda's CPU, so don't lower it on this one number; measure with the 59-page PDF and larger files first (Slice 4).
 - The alarm also notifies on its return to `OK` (`ok_actions`), so purging the DLQ sends an "OK" email. That's intended: it says the incident is over.
+
+### 2026-11-21, image `dda62b1` (step 10e: traces)
+
+Run by Claude Code at Chetan's request; tenant `73b7c720-9a87-44c3-a1c8-c0bd1611c54b`, document `8494d647-f05b-4f73-9cb0-91c5af4dd8f0`. Sections 2, 4 and 6 only (no corrupt PDF, so no alarm email).
+
+| Section | Result |
+| --- | --- |
+| 2. Register | 201, version 1, `pending_upload` |
+| 4. Upload to `indexed` | 200 from S3; `indexed` **25 s** after the upload (cold start included), 16 chunks, 1 attempt. Worker log `tracing on: ragdp-worker to https://api.honeycomb.io`, no export errors. Invocation 8.0 s, max memory 195 of 2048 MB |
+| 6. Duplicate message | `job e2e-traces-duplicate-1: skipped, 0 chunks` in 134 ms; still 16 chunks, 1 attempt |
+| Traces | Confirmed by Chetan in Honeycomb, dataset `ragdp-worker`: one `ingest` trace per message; the indexed one has `claim`, `load_and_verify`, `parse`, `chunk`, `embed` (`embed_batch`, `insert_chunks`) and `activate`, each with its duration |
+
+Noticed:
+- **The cold start's init phase timed out** (`INIT_REPORT Init Duration: 9999.61 ms Status: timeout`), so Lambda re-ran init inside the invocation; the message still succeeded. 10b's init was 5.4 s. Not the new code: the whole handler imports in 0.52 s locally (OpenTelemetry 0.04 s), and the image grew only 2.1 MB (234.4 to 236.5 MB). Most likely the first cold start of a just-deployed image, whose layers Lambda hadn't cached yet. Measure again on the next cold start of the same image; if it repeats, look at image size and lazy-importing PyMuPDF before anything that costs money (provisioned concurrency).
