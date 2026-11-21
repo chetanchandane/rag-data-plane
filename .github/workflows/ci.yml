@@ -168,3 +168,7 @@ jobs:
       contents: read
       id-token: write
     uses: ./.github/workflows/deploy.yml
+    # Only the one secret the deploy needs (not `secrets: inherit`). It's a `prod` environment
+    # secret; the called job's `environment: prod` makes GitHub resolve it there.
+    secrets:
+      ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}

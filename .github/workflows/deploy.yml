@@ -13,6 +13,11 @@ name: Deploy
 
 on:
   workflow_call:
+    # The caller must pass it by name even though it's a `prod` environment secret: GitHub
+    # resolves an environment secret the caller didn't pass to an empty string, silently.
+    secrets:
+      ALERT_EMAIL:
+        required: true
 
 permissions:
   contents: read
@@ -43,6 +48,16 @@ jobs:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
     steps:
+      # `required` only checks that the caller passed the secret, not that it has a value. An
+      # empty email would plan the alarm subscription's replacement and print the old address.
+      - name: Check the deploy inputs
+        working-directory: .
+        run: |
+          if [ -z "$TF_VAR_alert_email" ]; then
+            echo "::error::ALERT_EMAIL is empty. Set it on the prod environment and pass it from ci.yml."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # infra/bootstrap output deploy_role_arn.
