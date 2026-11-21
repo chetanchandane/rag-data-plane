@@ -2,12 +2,39 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-21: Step 11 token issuer hosting and keys
+
+- **Hosting: CloudFront in front of a private S3 bucket** (approved 2026-11-21). The bucket keeps every Block Public Access setting on, and only this distribution can read it, through origin access control (OAC).
+  - **The bucket policy** lets the CloudFront service principal `GetObject` exactly two keys (`.well-known/openid-configuration` and `.well-known/jwks.json`), on condition that `AWS:SourceArn` is this distribution. Like the other buckets, it also refuses any request that isn't over TLS.
+  - **Bucket encryption is SSE-S3** (AES256), not KMS: the objects are public keys, and KMS would cost money and need its own key policy for CloudFront.
+  - **The distribution** is HTTPS only, GET and HEAD only, `PriceClass_100`, and uses the default `*.cloudfront.net` certificate.
+  - **Caching uses the managed CachingOptimized policy.** It honors the origin's `Cache-Control`, so both objects carry `public, max-age=300` (and `Content-Type: application/json`). A new key reaches CloudFront within 5 minutes without an invalidation.
+  - **Why:** no public bucket in the account, so account-wide Block Public Access can be turned on later.
+  - **Rejected:** public-read S3 objects (a public bucket, flagged by every security scan), serving the documents from the HTTP API itself (the authorizer would depend on the API it protects), and GitHub Pages (outside AWS and Terraform).
+- **The issuer URL is `https://<distribution domain>`, with no trailing slash.** Terraform builds the discovery document from the distribution's `domain_name`.
+  - **The discovery document is partial on purpose:** `issuer` and `jwks_uri` only. This issuer has no authorization endpoint, and verifiers need nothing else.
+  - **The JWKS is committed at `infra/envs/prod/jwks.json`.** Terraform checks that every key is a public RSA signing key with a `kid`.
+- **The deploy role gains CloudFront** in bootstrap, which Chetan applies:
+  - **Creating a distribution** requires the request tag `Project = ragdp`; `default_tags` sets it.
+  - **Reading, updating, tagging and deleting** are allowed only on distributions tagged `Project = ragdp`.
+  - **Origin access controls** can't be tagged or named in IAM, so the role manages any in the account.
+  - **The cache policy lookup** is read-only, on `*`.
+  - **S3:** `s3:*` on `ragdp-issuer-*` buckets, like the raw bucket.
+- **Signing keys live under `/ragdp/issuer/`, not `/ragdp/prod/`.** This changes the issuer entry below.
+  - **Layout:** each private key is a SecureString at `/ragdp/issuer/signing_keys/<kid>`, and the String `/ragdp/issuer/active_kid` names the one that signs.
+  - **Why:** the workload permissions boundary allows reading `/ragdp/prod/*`, so a Lambda role the deploy role writes could have been granted the key. Nothing in bootstrap reaches `/ragdp/issuer/`, so only a human sign-in can mint.
+- **The `kid` is the key's RFC 7638 thumbprint** (SHA-256 of its `e`, `kty` and `n`), so a `kid` can't be paired with the wrong key. Keys are RSA 2048.
+- **One script, `scripts/issuer.py`,** with the subcommands `create-key`, `activate-key`, `retire-key` and `mint` (`mint --check` verifies the new token against the published JWKS). It replaces the planned `issuer_keys.py` and `mint_token.py`, which would have shared most of their code.
+  - **A private key never touches disk, stdout or Terraform state:** it goes from memory straight to SSM.
+  - **Every subcommand checks** that the AWS account is 905418224080.
+- **Tokens carry the OAuth `scope` claim** (space-separated), not SPEC's `scopes`, because API Gateway's authorizer reads `scope` or `scp`. They also carry a `jti` for tracing a token in logs. There's no `nbf`, since it adds nothing to `iat` here. Scope names are settled with the routes in step 13.
+
 ## 2026-11-21: Token issuer for Slice 2 (Open decisions #1 and #2)
 
 - **Decision #1** (approved 2026-11-21): rag-control-plane doesn't exist yet, so this repo builds a minimal stand-in issuer for the data plane to trust:
-  - **RS256** with one RSA key pair. The private key is an SSM SecureString under `/ragdp/prod/`; the public key is published as a JWKS with a `kid`.
+  - **RS256** with one RSA key pair. The private key is an SSM SecureString (under `/ragdp/issuer/`, see the step 11 entry above); the public key is published as a JWKS with a `kid`.
   - An **OIDC discovery document** (`/.well-known/openid-configuration`) and the **JWKS** it points to, served publicly over HTTPS.
-  - **`scripts/mint_token.py`** signs tokens with `iss`, `aud` = `rag-data-plane`, `sub`, `tenant_id`, `role_level`, `scopes`, `iat` and `exp`. Reading the private key needs Chetan's MFA sign-in; no CI role can read it.
+  - **`scripts/mint_token.py`** signs tokens with `iss`, `aud` = `rag-data-plane`, `sub`, `tenant_id`, `role_level`, `scope`, `iat` and `exp` (the claim is `scope`, see the step 11 entry above). Reading the private key needs Chetan's MFA sign-in; no CI role can read it.
   - **The issuer URL and audience are Terraform variables.** A real control plane, Cognito or Auth0 later replaces the stand-in without a code change.
 - **Why:**
   - SPEC's boundary is that the control plane decides who may do what, and the data plane only verifies the claims it's handed. What Slice 2 needs is a real issuer to verify against, not a login system.

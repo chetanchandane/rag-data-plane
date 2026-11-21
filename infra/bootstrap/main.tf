@@ -178,9 +178,10 @@ resource "aws_iam_role" "deploy" {
   max_session_duration = 3600
 }
 
-# What `terraform apply` in infra/envs/prod needs for Slice 1 (storage, ingest,
-# observability). Every statement is limited to resources named with the project prefix in
-# this account and Region. The API module (Slice 2) adds API Gateway here when it exists.
+# What `terraform apply` in infra/envs/prod needs (storage, ingest, observability, issuer).
+# Every statement is limited to the project's resources in this account: by name prefix where
+# the resource has a name, by the Project tag where it has only a random id. The API module
+# (step 13) adds API Gateway here when it exists.
 data "aws_iam_policy_document" "deploy" {
   statement {
     sid       = "StateList"
@@ -207,6 +208,64 @@ data "aws_iam_policy_document" "deploy" {
     sid       = "RawBucket"
     actions   = ["s3:*"]
     resources = ["arn:aws:s3:::${local.p}-raw-*", "arn:aws:s3:::${local.p}-raw-*/*"]
+  }
+
+  # The token issuer's bucket (step 11): private, read only by its CloudFront distribution.
+  statement {
+    sid       = "IssuerBucket"
+    actions   = ["s3:*"]
+    resources = ["arn:aws:s3:::${local.p}-issuer-*", "arn:aws:s3:::${local.p}-issuer-*/*"]
+  }
+
+  # CloudFront distributions have random ids, so they are scoped by tag. Creating one requires
+  # the Project tag in the request (the provider's default_tags send it); everything after
+  # that requires the tag on the distribution. TagResource is in both, because the tags are
+  # attached during the create call.
+  statement {
+    sid       = "CreateProjectDistributions"
+    actions   = ["cloudfront:CreateDistribution", "cloudfront:TagResource"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = [local.p]
+    }
+  }
+
+  statement {
+    sid = "ManageProjectDistributions"
+    actions = [
+      "cloudfront:GetDistribution",
+      "cloudfront:GetDistributionConfig",
+      "cloudfront:UpdateDistribution",
+      "cloudfront:DeleteDistribution",
+      "cloudfront:ListTagsForResource",
+      "cloudfront:TagResource",
+      "cloudfront:UntagResource",
+      "cloudfront:CreateInvalidation",
+      "cloudfront:GetInvalidation",
+    ]
+    resources = ["arn:aws:cloudfront::${local.account}:distribution/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [local.p]
+    }
+  }
+
+  # Origin access controls have random ids, no tags and no condition keys, so this can't be
+  # narrower than the account. An OAC grants nothing by itself: a bucket policy has to name
+  # the distribution that uses it.
+  statement {
+    sid = "OriginAccessControls"
+    actions = [
+      "cloudfront:CreateOriginAccessControl",
+      "cloudfront:GetOriginAccessControl",
+      "cloudfront:GetOriginAccessControlConfig",
+      "cloudfront:UpdateOriginAccessControl",
+      "cloudfront:DeleteOriginAccessControl",
+    ]
+    resources = ["*"]
   }
 
   statement {
@@ -306,6 +365,8 @@ data "aws_iam_policy_document" "deploy" {
       "lambda:ListEventSourceMappings",
       "lambda:GetAccountSettings",
       "cloudwatch:DescribeAlarms",
+      "cloudfront:ListCachePolicies", # the issuer looks up the managed CachingOptimized policy
+      "cloudfront:GetCachePolicy",
     ]
     resources = ["*"]
   }

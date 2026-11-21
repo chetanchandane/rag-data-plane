@@ -1,4 +1,5 @@
-# Production stack, Slice 1: raw bucket, ingest path, secrets names, alarms and budget.
+# Production stack: raw bucket, ingest path, secrets names, alarms and budget (Slice 1), and
+# the token issuer (step 11).
 # Applied by GitHub Actions through the bootstrap deploy role, or by Chetan from the laptop.
 
 terraform {
@@ -65,6 +66,13 @@ module "ingest" {
   log_retention_days           = 14
 }
 
+# The JWKS is committed; scripts/issuer.py writes it when keys are created or retired.
+module "issuer" {
+  source      = "../../modules/issuer"
+  bucket_name = "${var.name_prefix}-issuer-prod-${var.account_id}"
+  jwks_json   = file("${path.module}/jwks.json")
+}
+
 module "observability" {
   source      = "../../modules/observability"
   name_prefix = var.name_prefix
@@ -86,4 +94,13 @@ output "dlq_url" {
 
 output "worker_repository_url" {
   value = module.ingest.worker_repository_url
+}
+
+output "issuer_url" {
+  description = "JWT_ISSUER for scripts/issuer.py mint, and the authorizer's issuer (step 13)."
+  value       = module.issuer.issuer_url
+}
+
+output "issuer_distribution_id" {
+  value = module.issuer.distribution_id
 }

@@ -508,11 +508,13 @@ infra/
                           # worker Lambda (image), event source mapping, concurrency cap
     api/                  # API Lambda (image), HTTP API, routes, JWT authorizer, throttling, access logs
     secrets/              # SSM SecureString parameter names only; values set out of band
+    issuer/               # stand-in token issuer: private bucket + CloudFront (OAC) serving
+                          # the OIDC discovery document and JWKS (DECISIONS 2026-11-21)
     observability/        # alarms (DLQ depth > 0, 5xx rate, p95, worker errors),
                           # log retention 14 days, AWS Budget alerts
   envs/
     prod/
-      main.tf  backend.tf  variables.tf  prod.tfvars
+      main.tf  backend.tf  variables.tf  prod.tfvars  jwks.json
 services/
   api/                    # FastAPI app, Dockerfile
   worker/                 # ingest worker, Dockerfile
@@ -522,6 +524,7 @@ db/
 eval/
   golden/                 # questions, expected sources, personas, canary docs
 load/                     # k6 scripts
+scripts/                  # issuer.py: token issuer keys and minting (laptop only)
 .github/workflows/
   ci.yml                  # lint, unit, RLS + leak tests against a Neon branch
   eval.yml                # quality gate

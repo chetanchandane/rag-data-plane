@@ -1,6 +1,6 @@
 # infra/envs/prod
 
-Slice 1 production stack: raw bucket, EventBridge rule, ingest queue and DLQ, worker image repository, worker Lambda and its SQS trigger, DLQ alarm, and the monthly budget. Needs `infra/bootstrap` applied first, because the state bucket and the deploy role come from there.
+Production stack: raw bucket, EventBridge rule, ingest queue and DLQ, worker image repository, worker Lambda and its SQS trigger, DLQ alarm, the monthly budget (Slice 1), and the token issuer (step 11): a private bucket and a CloudFront distribution serving the OIDC discovery document and `jwks.json`. Needs `infra/bootstrap` applied first, because the state bucket and the deploy role come from there.
 
 ## Plan
 
@@ -52,3 +52,7 @@ AWS_PROFILE=ragdp TF_VAR_alert_email=you@example.com \
 ```
 
 Then push again (or rerun the failed job) so CI deploys the new image.
+
+## Token issuer
+
+`jwks.json` here holds the issuer's public keys; `scripts/issuer.py` writes it and Terraform publishes it, so planning this stack needs the file. Creating, rotating and retiring keys, and the waits between those steps: `docs/runbooks/issuer-keys.md`.

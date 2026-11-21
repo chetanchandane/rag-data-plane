@@ -62,6 +62,7 @@ uv run pytest -m db                   # DB tests against the Neon dev branch
 uv run python db/bootstrap.py         # once per dev branch: roles, schema grants, vector extension
 uv run alembic upgrade head           # migrations (uses DATABASE_URL_OWNER)
 PYTHONPATH=services uv run python -m worker.local <pdf> --tenant <uuid> --doc <uuid> --version 1  # one local ingest (real Bedrock)
+PYTHONPATH=services uv run python scripts/issuer.py mint --tenant <uuid> --role-level 2  # a 15-minute access token
 terraform -chdir=infra/envs/prod fmt -recursive && terraform -chdir=infra/envs/prod validate
 ```
 
@@ -80,6 +81,7 @@ DEV_AUTH_TOKEN=         # Slice 1 only, see below
 DEV_TENANT_ID=
 DEV_ROLE_LEVEL=3
 HONEYCOMB_API_KEY=      # optional, local traces only; Lambda reads its key from SSM
+JWT_ISSUER=             # token issuer URL (terraform output issuer_url), for scripts/issuer.py mint
 ```
 
 ## Auth in Slice 1
@@ -127,7 +129,7 @@ Work these in order. Each one is a separate session or prompt. Tick them off her
 
 Same rules as Slice 1. The token issuer comes first because everything after it uses real tokens (DECISIONS 2026-11-21, "Token issuer for Slice 2"). Where a step says "settle first", agree it and record it in DECISIONS before writing code.
 
-- [ ] **11. Token issuer.** `scripts/issuer_keys.py` makes the RSA key pair. The private key goes straight to SSM (`/ragdp/prod/jwt_signing_key`), never to disk or Terraform state; the public JWKS is committed. A Terraform module serves the discovery document and the JWKS publicly over HTTPS. `scripts/mint_token.py --tenant <uuid> --role-level N`. A key rotation runbook. Settle first: public-read S3 objects or CloudFront with origin access control.
+- [ ] **11. Token issuer.** `scripts/issuer.py create-key` makes the RSA key pair. The private key goes straight to SSM (`/ragdp/issuer/signing_keys/<kid>`), never to disk or Terraform state; the public JWKS is committed. `infra/modules/issuer` serves the discovery document and the JWKS over HTTPS through CloudFront from a private bucket (DECISIONS 2026-11-21, "Step 11"). `scripts/issuer.py mint --tenant <uuid> --role-level N`. A key rotation runbook.
   *Done when:* both documents are reachable over HTTPS, and a minted token verifies with PyJWT against the published JWKS (signature, `iss`, `aud`, `exp`). Chetan applies.
 - [ ] **12. Real claims in the API.** `get_claims()` verifies RS256 tokens with PyJWT against the issuer's JWKS (fetched once and cached, fetched again for an unknown `kid`). It requires `tenant_id` (a UUID) and `role_level` (1 to 3). The dev stub and its settings are removed. Settle first: whether the API on Lambda verifies the token too, or reads the claims API Gateway already verified. If it trusts API Gateway's claims, move `pyjwt[crypto]` out of the Lambda image's dependencies (local runs and tests still need it) to keep the image lean.
   *Done when:* tests with a throwaway key reject an expired token, a not-yet-valid one, the wrong issuer, the wrong audience, an unknown `kid`, `alg: none` and HS256, and missing or out-of-range claims. The existing endpoint tests pass with minted tokens, and the 10b runbook works locally with a minted token.
