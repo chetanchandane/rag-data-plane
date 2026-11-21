@@ -8,6 +8,15 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
 - **Why:** step 10's "done when" is every Slice 1 box, and three of them need work no earlier step built: a deploy workflow ("a push to `main` deploys through OIDC"), CI migrations ("migrated on Neon by CI") and telemetry ("traces show parse, chunk and embed spans"). Moving them to Slice 2 was considered and rejected: they are what makes Slice 1 worth posting.
 - **Checked while planning:** whether the endpoint used as "the dev branch" since 2026-11-17 was really `main`'s. It wasn't. The project has a `dev` child branch (`ep-sparkling-heart-bdl5i7aa`), and `main` has its own endpoint (`ep-wandering-math-bdgo4xwq`). Every DB test ran on `dev`.
 
+## 2026-11-21: Step 10e traces
+
+- **Backend: Honeycomb, US region** (approved 2026-11-21; SPEC allowed Grafana Cloud or Honeycomb). OTLP/HTTP to `https://api.honeycomb.io/v1/traces` with the `x-honeycomb-team` header. The dataset is the service name: `ragdp-worker` for the Lambda, `ragdp-worker-local` for `worker.local`, so dev runs never mix with production.
+- **Dependencies** (approved 2026-11-21): `opentelemetry-sdk` (provider, batch processor, in-memory exporter for tests) and `opentelemetry-exporter-otlp-proto-http`. No auto-instrumentation packages: the manual spans are what SPEC asks for, and every span can be explained.
+- **One trace per SQS message.** The handler's `ingest` span (message id, receive count, job id, outcome, DLQ reason) has the pipeline stages as children: `claim`, `load_and_verify`, `parse`, `chunk`, `embed` (with an `embed_batch` and an `insert_chunks` per batch), `activate`. Parse and chunk were timed together before; they're separate stages now, in `IngestResult.seconds` too.
+- **Attributes are ids, counts and outcomes, never document text.** A DB test checks that no attribute contains the document's text.
+- **The key is an SSM SecureString,** `/ragdp/prod/honeycomb_api_key`, stored out of band like the DB URLs. The Lambda gets only its name (`HONEYCOMB_API_KEY_PARAM`) and the endpoint; the worker role may read that one parameter.
+- **Tracing never breaks ingestion.** No key, an unreadable key or any setup error leaves tracing off with a log line. The handler flushes spans in `finally` with a 3-second limit, because Lambda freezes the container as soon as it returns; export errors are logged and dropped.
+
 ## 2026-11-20: Step 10d deploys
 
 - **A push to `main` deploys with no approval** (approved 2026-11-20). `ci.yml` calls `deploy.yml` after `migrate`, so new code never meets an old schema. The `prod` environment's required reviewer is removed.

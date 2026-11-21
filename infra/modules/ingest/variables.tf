@@ -35,6 +35,21 @@ variable "database_url_param_arn" {
   type = string
 }
 
+variable "honeycomb_api_key_param_name" {
+  description = "SSM SecureString holding the Honeycomb ingest key. The worker reads it at cold start."
+  type        = string
+}
+
+variable "honeycomb_api_key_param_arn" {
+  type = string
+}
+
+variable "honeycomb_endpoint" {
+  description = "Honeycomb's OTLP/HTTP endpoint for the account's region."
+  type        = string
+  default     = "https://api.honeycomb.io"
+}
+
 variable "workload_role_path" {
   description = "IAM path the deploy role may create roles under (bootstrap output)."
   type        = string

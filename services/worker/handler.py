@@ -11,6 +11,8 @@ the local runner uses) and decides what a failure means for the message:
                      DLQ itself.
 
 The queue's batch size is 1 (one document per invocation), so raising retries one message.
+
+Each message is one trace: an `ingest` span here, with the pipeline's stages under it.
 """
 
 import asyncio
@@ -22,16 +24,22 @@ from dataclasses import dataclass
 from typing import Any
 
 import boto3
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
 from pydantic import ValidationError
 
 from shared.db import create_pool
 from shared.errors import MAX_REASON_LENGTH, PermanentError
 from shared.jobs import IngestFileJob, parse_ingest_job
+from shared.telemetry import flush, setup_tracing
 from worker.embedding import embed_batch, make_bedrock_client
 from worker.pipeline import IngestResult, ingest_version
 
 log = logging.getLogger(__name__)
 logging.getLogger().setLevel(logging.INFO)  # Lambda's root logger defaults to WARNING
+tracer = trace.get_tracer(__name__)
+
+SERVICE_NAME = "ragdp-worker"  # also the Honeycomb dataset
 
 RunIngest = Callable[[IngestFileJob], Awaitable[IngestResult]]
 SendToDlq = Callable[[str, str], None]  # (original body, reason)
@@ -56,6 +64,9 @@ async def process_message(
         # No row is touched: an invalid message has no claim (SPEC: mark failed only after one).
         return await _dead_letter(send_to_dlq, body, _validation_reason(exc), job_id=None)
 
+    trace.get_current_span().set_attributes(
+        {"ingest.job_id": job.job_id, "ingest.job_type": job.job_type}
+    )
     try:
         if not isinstance(job, IngestFileJob):
             # Reindex and delete jobs come with the endpoints that produce them (Slice 2;
@@ -76,6 +87,7 @@ async def _dead_letter(
 ) -> str:
     # If this raises, the handler raises and SQS redelivers the message: nothing is lost.
     await asyncio.to_thread(send_to_dlq, body, reason)
+    trace.get_current_span().set_attribute("ingest.dlq_reason", reason)
     log.warning("job %s sent to the DLQ: %s", job_id, reason)
     return "dead_lettered"
 
@@ -92,6 +104,14 @@ class _Deps:
     s3: Any
     sqs: Any
     bedrock: Any
+
+
+@functools.cache
+def _tracing() -> TracerProvider | None:
+    """Once per container. Off (None) if HONEYCOMB_API_KEY_PARAM isn't set or can't be read:
+    a tracing problem never stops ingestion."""
+    ssm = boto3.client("ssm", region_name=os.environ["AWS_REGION"])
+    return setup_tracing(SERVICE_NAME, os.environ, ssm)
 
 
 @functools.cache
@@ -152,11 +172,20 @@ async def _process_record(body: str, deps: _Deps) -> str:
 
 def handler(event: dict, context: Any) -> None:
     """Lambda entry point for the SQS event source mapping."""
-    deps = _deps()
-    for record in event["Records"]:  # batch size 1: exactly one record
-        log.info(
-            "message %s, receive %s",
-            record["messageId"],
-            record.get("attributes", {}).get("ApproximateReceiveCount"),
-        )
-        asyncio.run(_process_record(record["body"], deps))
+    provider = _tracing()
+    try:
+        deps = _deps()
+        for record in event["Records"]:  # batch size 1: exactly one record
+            receive_count = int(record.get("attributes", {}).get("ApproximateReceiveCount", 0))
+            log.info("message %s, receive %s", record["messageId"], receive_count)
+            attributes = {
+                "messaging.message.id": record["messageId"],
+                "messaging.sqs.receive_count": receive_count,
+            }
+            # A raised error is recorded on the span (status ERROR) before SQS retries.
+            with tracer.start_as_current_span("ingest", attributes=attributes) as span:
+                outcome = asyncio.run(_process_record(record["body"], deps))
+                span.set_attribute("ingest.outcome", outcome)
+    finally:
+        # Before returning: Lambda freezes the container right after.
+        flush(provider)

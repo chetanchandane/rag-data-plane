@@ -30,6 +30,11 @@ The Lambda needs an image in ECR, and the ECR repository is part of this stack. 
    uv run python db/bootstrap.py --production --aws-account-id 905418224080
    ```
    It rotates the three role passwords, stores the role URLs as SecureStrings under `/ragdp/prod/` (`database_url_ingest` is the worker's), and runs the migrations. Nothing else keeps the passwords. Re-running it rotates them again; a worker that's running picks up the new URL at its next cold start.
+   The Honeycomb ingest key for traces (step 10e) is stored the same way, out of band. The prompt hides it:
+   ```bash
+   uv run python -c "import boto3, getpass; boto3.Session(profile_name='ragdp').client('ssm', region_name='us-east-2').put_parameter(Name='/ragdp/prod/honeycomb_api_key', Type='SecureString', Value=getpass.getpass('Honeycomb ingest key: '), Overwrite=True)"
+   ```
+   Without it the worker still runs, with tracing off (it logs `tracing off: setup failed`).
 4. **Apply everything:** `terraform apply -var-file=prod.tfvars -var worker_image_tag=<sha>`.
 5. **Confirm the subscription email** AWS sends to `alert_email`. Alarms aren't delivered until you do.
 

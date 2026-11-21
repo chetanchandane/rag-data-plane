@@ -186,6 +186,12 @@ data "aws_iam_policy_document" "worker" {
   }
 
   statement {
+    sid       = "ReadTracingKey"
+    actions   = ["ssm:GetParameter"]
+    resources = [var.honeycomb_api_key_param_arn]
+  }
+
+  statement {
     sid       = "DecryptViaSsmOnly"
     actions   = ["kms:Decrypt"]
     resources = ["*"] # the AWS-managed SSM key; usable only through SSM (condition below)
@@ -228,13 +234,16 @@ resource "aws_lambda_function" "worker" {
   # No reserved concurrency (DECISIONS, step 8): the account limit of 10 allows none. The
   # event source mapping's maximum_concurrency = 2 caps the worker instead.
 
-  # Names and ids only. The DB URL is read from SSM at cold start, never put here.
+  # Names and ids only. The DB URL and the Honeycomb key are read from SSM at cold start,
+  # never put here.
   environment {
     variables = {
-      RAW_BUCKET         = var.raw_bucket_name
-      DLQ_URL            = aws_sqs_queue.dlq.id
-      EMBEDDING_MODEL_ID = var.embedding_model_id
-      DATABASE_URL_PARAM = var.database_url_param_name
+      RAW_BUCKET              = var.raw_bucket_name
+      DLQ_URL                 = aws_sqs_queue.dlq.id
+      EMBEDDING_MODEL_ID      = var.embedding_model_id
+      DATABASE_URL_PARAM      = var.database_url_param_name
+      HONEYCOMB_API_KEY_PARAM = var.honeycomb_api_key_param_name
+      HONEYCOMB_ENDPOINT      = var.honeycomb_endpoint
     }
   }
 

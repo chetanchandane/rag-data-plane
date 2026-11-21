@@ -10,6 +10,7 @@ the "already done" path. Pass --sha256 to register a different hash and see the
 hash-mismatch path.
 
 Needs in .env: DATABASE_URL_INGEST, AWS_REGION, EMBEDDING_MODEL_ID, AWS_PROFILE.
+Optional: HONEYCOMB_API_KEY sends the trace to Honeycomb, dataset ragdp-worker-local.
 Dev only: never used on Lambda.
 """
 
@@ -25,9 +26,11 @@ from pathlib import Path
 from uuid import UUID
 
 from dotenv import load_dotenv
+from opentelemetry import trace
 
 from shared.db import create_pool, rls_transaction
 from shared.errors import PermanentError
+from shared.telemetry import flush, setup_tracing
 from worker.embedding import embed_batch, make_bedrock_client
 from worker.pipeline import ingest_version
 
@@ -99,6 +102,8 @@ async def main() -> int:
 
     load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    # A dataset of its own, so local runs never mix with production traces.
+    provider = setup_tracing("ragdp-worker-local", os.environ)
     data = args.pdf.read_bytes()
     s3_key = f"raw/{args.tenant}/{args.doc}/v{args.version}/source.pdf"
     model_id = os.environ["EMBEDDING_MODEL_ID"]
@@ -119,13 +124,14 @@ async def main() -> int:
             )
         exit_code = 0
         try:
-            result = await ingest_version(
-                pool,
-                s3_key,
-                load_source=lambda: data,
-                embed=functools.partial(embed_batch, bedrock, model_id=model_id),
-                embedding_model=model_id,
-            )
+            with trace.get_tracer(__name__).start_as_current_span("ingest"):
+                result = await ingest_version(
+                    pool,
+                    s3_key,
+                    load_source=lambda: data,
+                    embed=functools.partial(embed_batch, bedrock, model_id=model_id),
+                    embedding_model=model_id,
+                )
             print("result:", json.dumps(result.__dict__))
         except PermanentError as exc:
             # On Lambda this message would go to the DLQ with exc.reason as its attribute.
@@ -136,6 +142,7 @@ async def main() -> int:
         return exit_code
     finally:
         await pool.close()
+        flush(provider)
 
 
 if __name__ == "__main__":

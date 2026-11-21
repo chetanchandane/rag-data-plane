@@ -7,17 +7,22 @@ can pass fakes and nothing here knows about Lambda or SQS.
 On failure after a successful claim, the version is marked 'failed' with a short reason and
 the exception is re-raised. The caller decides what that means: PermanentError goes to the
 DLQ at once, anything else is transient and left for SQS to retry.
+
+Each stage is an OpenTelemetry span (SPEC: Architecture, Telemetry) and is also timed into
+IngestResult.seconds. Span attributes are ids and counts, never document text.
 """
 
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import batched
 from typing import Literal
 
 import asyncpg
+from opentelemetry import trace
 
 from shared.errors import PermanentError
 from shared.jobs import parse_s3_key
@@ -26,6 +31,7 @@ from worker.chunking import CHUNKER_VERSION, chunk
 from worker.pdf import PARSER_VERSION, parse, verify_hash
 
 log = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 EMBED_BATCH_SIZE = 32
 
@@ -39,6 +45,18 @@ class IngestResult:
     chunk_count: int = 0
     embedded_now: int = 0  # chunks embedded in this run (fewer than chunk_count on a resume)
     seconds: dict[str, float] = field(default_factory=dict)  # per stage
+
+
+@contextmanager
+def _stage(
+    seconds: dict[str, float], name: str, attributes: dict[str, int | str] | None = None
+) -> Iterator[trace.Span]:
+    """One pipeline stage: a span with that name, and its duration in `seconds`. A stage
+    that raises gets no duration; its span records the exception."""
+    start = time.perf_counter()
+    with tracer.start_as_current_span(name, attributes=attributes) as span:
+        yield span
+    seconds[name] = round(time.perf_counter() - start, 2)
 
 
 async def ingest_version(
@@ -55,14 +73,25 @@ async def ingest_version(
     except ValueError as exc:
         raise PermanentError("bad_key", str(exc)) from exc
 
-    async with pool.acquire() as conn:
-        claim = await store.claim(conn, parts, s3_key)
+    # On the caller's span (the handler's `ingest`), so every trace can be found by document.
+    trace.get_current_span().set_attributes(
+        {
+            "ingest.tenant_id": str(parts.tenant_id),
+            "ingest.doc_id": str(parts.doc_id),
+            "ingest.version": parts.version,
+        }
+    )
+    seconds: dict[str, float] = {}
+    with _stage(seconds, "claim") as span:
+        async with pool.acquire() as conn:
+            claim = await store.claim(conn, parts, s3_key)
+        span.set_attribute("ingest.claimed", claim is not None)
     if claim is None:
         log.info("version %s v%s is done or held by another worker", parts.doc_id, parts.version)
         return IngestResult(outcome="skipped")
 
     try:
-        return await _process(pool, claim, load_source, embed, embedding_model)
+        return await _process(pool, claim, load_source, embed, embedding_model, seconds)
     except Exception as exc:
         # Exception, not BaseException: a killed process (Ctrl-C, Lambda timeout) records
         # nothing, like a real crash. Its lease expires and the next delivery resumes.
@@ -76,23 +105,26 @@ async def _process(
     load_source: LoadSource,
     embed: Embed,
     embedding_model: str,
+    seconds: dict[str, float],
 ) -> IngestResult:
-    seconds: dict[str, float] = {}
-    clock = time.perf_counter()
-
-    def lap(stage: str) -> None:
-        nonlocal clock
-        now = time.perf_counter()
-        seconds[stage] = round(now - clock, 2)
-        clock = now
-
-    data = await asyncio.to_thread(load_source)
-    verify_hash(data, claim.sha256)
-    lap("load_and_verify")
+    with _stage(seconds, "load_and_verify") as span:
+        data = await asyncio.to_thread(load_source)
+        span.set_attribute("ingest.bytes", len(data))
+        verify_hash(data, claim.sha256)
 
     # Parsing is CPU-bound; a thread keeps the event loop free.
-    chunks = chunk(await asyncio.to_thread(parse, data))
-    lap("parse_and_chunk")
+    with _stage(seconds, "parse") as span:
+        blocks = await asyncio.to_thread(parse, data)
+        span.set_attributes(
+            {
+                "ingest.pages": max((b.page for b in blocks), default=0),
+                "ingest.blocks": len(blocks),
+            }
+        )
+
+    with _stage(seconds, "chunk") as span:
+        chunks = chunk(blocks)
+        span.set_attribute("ingest.chunks", len(chunks))
 
     async with pool.acquire() as conn:
         await store.start_embedding(
@@ -108,16 +140,23 @@ async def _process(
     # Resume: embed only what an earlier attempt didn't store. Each batch is written before
     # the next is embedded, so a crash loses at most one batch.
     missing = [c for c in chunks if c.index not in done]
-    for batch in batched(missing, EMBED_BATCH_SIZE):
-        vectors = await asyncio.to_thread(embed, [c.content for c in batch])
-        async with pool.acquire() as conn:
-            await store.insert_chunks(conn, claim, batch, vectors)
-    lap("embed_and_insert")
+    batches = list(batched(missing, EMBED_BATCH_SIZE))
+    embed_attributes = {"ingest.chunks_to_embed": len(missing), "ingest.batches": len(batches)}
+    with _stage(seconds, "embed", embed_attributes):
+        for batch in batches:
+            with tracer.start_as_current_span(
+                "embed_batch", attributes={"ingest.texts": len(batch)}
+            ):
+                vectors = await asyncio.to_thread(embed, [c.content for c in batch])
+            with tracer.start_as_current_span("insert_chunks"):
+                async with pool.acquire() as conn:
+                    await store.insert_chunks(conn, claim, batch, vectors)
 
-    async with pool.acquire() as conn:
-        activated = await store.activate(conn, claim)
-        await store.cleanup_superseded(conn, claim)
-    lap("activate_and_cleanup")
+    with _stage(seconds, "activate") as span:
+        async with pool.acquire() as conn:
+            activated = await store.activate(conn, claim)
+            await store.cleanup_superseded(conn, claim)
+        span.set_attribute("ingest.activated", activated)
 
     return IngestResult(
         outcome="indexed" if activated else "superseded",

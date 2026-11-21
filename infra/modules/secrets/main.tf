@@ -9,6 +9,7 @@ locals {
     database_url_ingest = "${local.prefix}/database_url_ingest" # app_ingest, pooled endpoint
     database_url_api    = "${local.prefix}/database_url_api"    # app_api, pooled endpoint
     database_url_owner  = "${local.prefix}/database_url_owner"  # app_owner, direct; migrations
+    honeycomb_api_key   = "${local.prefix}/honeycomb_api_key"   # Honeycomb ingest key (traces)
   }
 }
 

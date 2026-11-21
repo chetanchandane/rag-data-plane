@@ -79,6 +79,7 @@ RAW_BUCKET=
 DEV_AUTH_TOKEN=         # Slice 1 only, see below
 DEV_TENANT_ID=
 DEV_ROLE_LEVEL=3
+HONEYCOMB_API_KEY=      # optional, local traces only; Lambda reads its key from SSM
 ```
 
 ## Auth in Slice 1

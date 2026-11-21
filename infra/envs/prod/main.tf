@@ -57,9 +57,12 @@ module "ingest" {
   embedding_model_id      = var.embedding_model_id
   database_url_param_name = module.secrets.names.database_url_ingest
   database_url_param_arn  = module.secrets.arns.database_url_ingest
-  workload_role_path      = local.workload_role_path
-  workload_boundary_arn   = local.workload_boundary_arn
-  log_retention_days      = 14
+  # Tracing (step 10e). The parameter is created out of band, like the DB URLs.
+  honeycomb_api_key_param_name = module.secrets.names.honeycomb_api_key
+  honeycomb_api_key_param_arn  = module.secrets.arns.honeycomb_api_key
+  workload_role_path           = local.workload_role_path
+  workload_boundary_arn        = local.workload_boundary_arn
+  log_retention_days           = 14
 }
 
 module "observability" {

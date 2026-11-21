@@ -1,15 +1,20 @@
 """Unit tests for the SQS handler's decisions: process, dead-letter, or raise for a retry.
 
-No AWS, no database: ingest and the DLQ are fakes passed to process_message().
+No AWS, no database: ingest and the DLQ are fakes passed to process_message(). Spans go to
+the in-memory exporter (tests/conftest.py).
 """
 
 import json
 import uuid
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
 from shared.errors import PermanentError
 from shared.jobs import IngestFileJob
+from worker import handler as handler_module
 from worker.handler import process_message
 from worker.pipeline import IngestResult
 
@@ -137,3 +142,84 @@ async def test_a_failed_dlq_send_raises_so_nothing_is_lost() -> None:
     ingest = FakeIngest(raises=PermanentError("unparseable_pdf", "not a PDF"))
     with pytest.raises(ConnectionError):
         await run(message(), ingest, FakeDlq(fail=True))
+
+
+# --- Tracing ---------------------------------------------------------------------------------
+# handler() with its AWS wiring (_deps, _tracing) and the per-record work replaced by fakes,
+# so these check only the span around each message and the flush before returning.
+
+
+class FakeProvider:
+    def __init__(self) -> None:
+        self.flushes = 0
+
+    def force_flush(self, timeout_millis: int) -> bool:
+        self.flushes += 1
+        return True
+
+
+def sqs_event(body: str) -> dict:
+    return {
+        "Records": [
+            {"messageId": "msg-1", "body": body, "attributes": {"ApproximateReceiveCount": "2"}}
+        ]
+    }
+
+
+@pytest.fixture
+def lambda_handler(monkeypatch: pytest.MonkeyPatch) -> FakeProvider:
+    provider = FakeProvider()
+    monkeypatch.setattr(handler_module, "_tracing", lambda: provider)
+    monkeypatch.setattr(handler_module, "_deps", lambda: object())
+    return provider
+
+
+def test_each_message_is_one_ingest_span_flushed_before_returning(
+    lambda_handler: FakeProvider, spans: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[str] = []
+
+    async def fake_record(body: str, deps: object) -> str:
+        seen.append(trace.get_current_span().name)  # the span reaches asyncio.run's task
+        return await run(body, FakeIngest(), FakeDlq())
+
+    monkeypatch.setattr(handler_module, "_process_record", fake_record)
+    handler_module.handler(sqs_event(message()), None)
+
+    [span] = spans.get_finished_spans()
+    assert span.name == "ingest" and seen == ["ingest"]
+    assert span.attributes["messaging.message.id"] == "msg-1"
+    assert span.attributes["messaging.sqs.receive_count"] == 2
+    assert span.attributes["ingest.job_id"] == "evt-1"
+    assert span.attributes["ingest.outcome"] == "indexed"
+    assert lambda_handler.flushes == 1
+
+
+def test_a_dead_lettered_message_records_the_reason(
+    lambda_handler: FakeProvider, spans: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_record(body: str, deps: object) -> str:
+        return await run(body, FakeIngest(), FakeDlq())
+
+    monkeypatch.setattr(handler_module, "_process_record", fake_record)
+    handler_module.handler(sqs_event(message(bucket="another-bucket")), None)
+
+    [span] = spans.get_finished_spans()
+    assert span.attributes["ingest.outcome"] == "dead_lettered"
+    assert span.attributes["ingest.dlq_reason"].startswith("wrong_bucket:")
+
+
+def test_a_transient_error_marks_the_span_and_still_flushes(
+    lambda_handler: FakeProvider, spans: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_record(body: str, deps: object) -> str:
+        return await run(body, FakeIngest(raises=TimeoutError("Bedrock timed out")), FakeDlq())
+
+    monkeypatch.setattr(handler_module, "_process_record", fake_record)
+    with pytest.raises(TimeoutError):
+        handler_module.handler(sqs_event(message()), None)
+
+    [span] = spans.get_finished_spans()
+    assert span.status.status_code == StatusCode.ERROR
+    assert [event.name for event in span.events] == ["exception"]
+    assert lambda_handler.flushes == 1
