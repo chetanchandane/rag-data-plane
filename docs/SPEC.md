@@ -638,7 +638,7 @@ Four slices, about 10 to 12 focused days in total. Each one ends deployed, with 
 
 ### Slice 1: Ingestion (3 to 4 days)
 
-- [ ] `bootstrap` applied; a push to `main` deploys through OIDC
+- [x] `bootstrap` applied; a push to `main` deploys through OIDC
 - [x] Schema, roles and RLS policies migrated on Neon by CI
 - [x] `POST /v1/documents` returns a presigned URL; an upload with the wrong checksum is rejected by S3
 - [x] A 20-page PDF goes from upload to `indexed`, visible via `GET /v1/documents/{id}`

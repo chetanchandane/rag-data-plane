@@ -117,7 +117,7 @@ Work these in order. Each one is a separate session or prompt. Tick them off her
     *Done when:* those Slice 1 boxes are ticked.
   - [x] **10c. CI.** `ci.yml`: lint, unit tests, DB tests on a Neon branch; migrations on production as `app_owner`.
     *Done when:* a CI run passes and production's migrations are applied by CI.
-  - [ ] **10d. Deploys.** `deploy.yml`: a push to `main` builds and pushes the worker image and runs `terraform apply` through OIDC.
+  - [x] **10d. Deploys.** `deploy.yml`: a push to `main` builds and pushes the worker image and runs `terraform apply` through OIDC.
     *Done when:* a push to `main` deploys.
   - [ ] **10e. Traces.** OpenTelemetry spans for parse, chunk and embed, sent to a free backend (SPEC: Architecture, Telemetry).
     *Done when:* a trace shows those spans with durations, and every Slice 1 box is ticked.
