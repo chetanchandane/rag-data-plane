@@ -29,6 +29,32 @@ JWKS_URI = f"{ISSUER}/.well-known/jwks.json"
 BUCKET = "ragdp-raw-test"
 REGION = "us-east-2"
 MODEL_ID = "amazon.titan-embed-text-v2:0"
+RERANK_MODEL_ID = "rerank-v5.0-fast"
+PRIMARY_LLM = "us.anthropic.claude-haiku-5-5"
+SECONDARY_LLM = "us.amazon.nova-2-lite-v1:0"
+
+
+def make_settings(**overrides: Any) -> Settings:
+    """Settings as the API reads them, with the test issuer."""
+    values = {
+        "database_url": "unused-in-tests",
+        "raw_bucket": BUCKET,
+        "aws_region": REGION,
+        "embedding_model_id": MODEL_ID,
+        "rerank_model_id": RERANK_MODEL_ID,
+        "llm_primary_model_id": PRIMARY_LLM,
+        "llm_secondary_model_id": SECONDARY_LLM,
+        "jwt_issuer": ISSUER,
+    }
+    return Settings(**(values | overrides))
+
+
+def no_llm(*args: Any) -> Any:
+    raise AssertionError("the request called the LLM")
+
+
+def no_embedding(*args: Any) -> Any:
+    raise AssertionError("the request embedded a query")
 
 
 def fake_s3():
@@ -79,17 +105,16 @@ def make_verifier(jwks: FakeJwks | None = None) -> TokenVerifier:
 
 
 def build_app(pool, tenant_id: uuid.UUID, role_level: int) -> FastAPI:
-    """The app, plus a token for tenant_id and role_level that client() sends by default."""
+    """The app, plus a token for tenant_id and role_level that client() sends by default.
+    No reranker, and an embedder and LLM that fail the test if called: tests that need them
+    set app.state.embed_query, app.state.reranker and app.state.generate."""
     app = create_app()
-    app.state.settings = Settings(
-        database_url="unused-in-tests",
-        raw_bucket=BUCKET,
-        aws_region=REGION,
-        embedding_model_id=MODEL_ID,
-        jwt_issuer=ISSUER,
-    )
+    app.state.settings = make_settings()
     app.state.pool = pool
     app.state.s3 = fake_s3()
+    app.state.embed_query = no_embedding
+    app.state.reranker = None
+    app.state.generate = no_llm
     app.state.verifier = make_verifier()
     app.state.test_token = mint(tenant_id, role_level)
     return app

@@ -45,6 +45,10 @@ locals {
   workload_roles_arn = "arn:aws:iam::${var.account_id}:role/${var.name_prefix}/*"
 
   state_key_prod = "envs/prod/terraform.tfstate"
+
+  # Where a us.* (US geography) cross-region inference profile may send a request
+  # (aws bedrock list-inference-profiles, 2026-11-22).
+  us_inference_regions = ["us-east-1", "us-east-2", "us-west-2"]
 }
 
 # --- 1. State bucket -----------------------------------------------------------------------
@@ -589,10 +593,15 @@ data "aws_iam_policy_document" "workload_boundary" {
     }
   }
 
+  # Models in this Region, plus the API's LLMs (step 15): this account's US cross-region
+  # inference profiles, and the foundation models in the US Regions they route to.
   statement {
-    sid       = "InvokeBedrockModels"
-    actions   = ["bedrock:InvokeModel"]
-    resources = ["arn:aws:bedrock:${local.region}::foundation-model/*"]
+    sid     = "InvokeBedrockModels"
+    actions = ["bedrock:InvokeModel"]
+    resources = concat(
+      [for region in local.us_inference_regions : "arn:aws:bedrock:${region}::foundation-model/*"],
+      ["arn:aws:bedrock:${local.region}:${local.account}:inference-profile/us.*"],
+    )
   }
 }
 

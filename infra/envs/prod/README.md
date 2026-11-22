@@ -52,6 +52,24 @@ Same reason as above: the API Lambda needs an image in a repository this stack c
    ```
 3. **Push to `main`.** CI builds and pushes both images and applies the rest of the stack.
 
+## Adding answers (step 15, once)
+
+`POST /v1/query` reranks with Cohere and answers with Claude Haiku 5.5, falling back to Amazon Nova 2 Lite (DECISIONS 2026-11-22, "Step 15"). Do these before the push that deploys it; without them the API still runs, degraded.
+
+1. **Let the account use Anthropic models.** Bedrock asks once per account for use-case details: Bedrock console → Model catalog → Claude Haiku 5.5 → submit the form. Then check:
+   ```bash
+   aws bedrock get-foundation-model-availability --profile ragdp --region us-east-2 \
+     --model-id anthropic.claude-haiku-5-5 --query agreementAvailability.status
+   ```
+   Until this shows `AVAILABLE`, Haiku is refused and every answer comes from Nova, flagged `degraded: ["llm_primary"]`. AWS creates the account's Marketplace subscription on the first call; make that call from your own login (the paid test in `tests/api/test_query_paid.py` does), since the API's role can't subscribe.
+2. **Store the Cohere Production key** the same way as the other keys. The prompt hides it:
+   ```bash
+   uv run python -c "import boto3, getpass; boto3.Session(profile_name='ragdp').client('ssm', region_name='us-east-2').put_parameter(Name='/ragdp/prod/cohere_api_key', Type='SecureString', Value=getpass.getpass('Cohere key: '), Overwrite=True)"
+   ```
+   Without it the API logs `reranker off` and answers with RRF order and `degraded: ["reranker"]`. A new key reaches the API at its next cold start.
+3. **Apply bootstrap:** the workload boundary gains the US inference profiles and the models in the Regions they route to. `AWS_PROFILE=ragdp terraform -chdir=infra/bootstrap apply`.
+4. **Push to `main`.**
+
 ## Every deploy after that
 
 A push to `main` deploys by itself (`.github/workflows/deploy.yml`, called by `ci.yml` after the production migrations). It builds and pushes the worker and API images tagged with the commit SHA, plans, and applies that plan.
@@ -76,10 +94,12 @@ Both images carry the same tag, so one `TAG` serves both. Then push again (or re
 ```bash
 export PYTHONPATH=services API_URL=$(terraform -chdir=infra/envs/prod output -raw api_url)
 TOKEN=$(uv run python scripts/issuer.py mint --tenant <uuid> --role-level 2 \
-  --scope documents:read --scope documents:write --scope retrieve)
+  --scope documents:read --scope documents:write --scope retrieve --scope query)
 curl -sS -H "Authorization: Bearer $TOKEN" "$API_URL/v1/whoami"
 curl -sS -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"query": "policy enforcement point", "top_k": 5}' "$API_URL/v1/retrieve"
+curl -sS -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"query": "What does a policy enforcement point do?"}' "$API_URL/v1/query"
 ```
 
 API Gateway refuses a missing, expired or wrong-audience token (401) and a token without the route's scope (403) before the Lambda runs. The access log shows each request's `authorizerError`, and an empty `integrationStatus` when the Lambda wasn't invoked:

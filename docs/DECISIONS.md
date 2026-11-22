@@ -2,6 +2,56 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-22: Step 15 /v1/query
+
+- **LLMs: Claude Haiku 5.5 primary, Amazon Nova 2 Lite secondary, both through Bedrock's Converse API** (Chetan, 2026-11-22).
+  - **IDs:** US cross-region inference profiles, `us.anthropic.claude-haiku-5-5` and `us.amazon.nova-2-lite-v1:0`, set by `LLM_PRIMARY_MODEL_ID` and `LLM_SECONDARY_MODEL_ID`. `us.*`, not `global.*`, keeps inference inside US Regions. Both profiles route to us-east-1, us-east-2 and us-west-2 (`aws bedrock list-inference-profiles`, 2026-11-22).
+  - **Why two providers:** the failover crosses providers, so one provider's outage doesn't take answers down. Converse is one request shape for both, so there's no second SDK or API key.
+  - **Claude runs with thinking at effort `low`** (`LLM_PRIMARY_EFFORT`), sent as `additionalModelRequestFields.output_config.effort`. Nova gets no effort setting.
+  - **IAM:** `bedrock:InvokeModel` on both profile ARNs, and on each model in the three Regions with the condition `bedrock:InferenceProfileArn` equal to one of the profiles, so the models can't be called directly. The bootstrap boundary gains the US Regions' foundation models and this account's `us.*` profiles; Chetan applies bootstrap.
+  - **Not verified yet:** the account had no access to Anthropic models (`agreementAvailability: NOT_AVAILABLE`; Bedrock's one-time use-case form wasn't filled in). So Haiku's request shape (auto tool choice, `output_config.effort`) is tested only against a fake until the paid test runs. Nova's forced tool choice was checked against the real model.
+- **Structured output is one tool call, `submit_answer`,** with `answerable`, `answer` and `citations` (`chunk_id`, `quote`).
+  - **Claude gets `toolChoice: auto`** plus an instruction, because Anthropic models refuse a forced tool choice while thinking. **Nova gets the forced choice.**
+  - **Rejected: Converse's `outputConfig` JSON schema.** Nova 2 Lite rejects it ("This model doesn't support the outputConfig field").
+  - **Output is validated strictly** (Pydantic, `strict=True`). No tool call, the wrong types, a missing field or a cut-off response (`max_tokens`) count as malformed: that model failed.
+- **Failover is built now, in its simple form** (Chetan, 2026-11-22). Circuit breakers and tuned budgets stay in Slice 3.
+  - **The rule:** if the primary errs (any Bedrock error or timeout) or gives malformed output, the secondary is called once, with `degraded: ["llm_primary"]`. If the secondary fails too, the answer is an abstain: `llm_unavailable` if it errored, `llm_output_invalid` if its output was malformed. Never a 500.
+  - **Timeouts: 10 s per model, one attempt each.** SPEC's 20 s + 20 s can't fit in API Gateway's 30 s integration timeout. The worst case is embedding (about 4.5 s), SQL (2 s), the reranker (1.5 s) and both models (20 s), under the Lambda's 29 s. The 12 s first proposed didn't leave room for the rest.
+  - **The Lambda timeout goes from 15 s to 29 s,** just under API Gateway's 30 s, so the Lambda gives up first.
+- **Reranker: Cohere Rerank 5 Fast** (`rerank-v5.0-fast`, `RERANK_MODEL_ID`) on `POST https://api.cohere.com/v2/rerank`, **with a Production key, not a Trial key** (Chetan, 2026-11-22; closes Open decision #7).
+  - **The key** is the SecureString `/ragdp/prod/cohere_api_key`. Chetan stores it out of band, like the other keys. The API reads it at cold start, and locally from `COHERE_API_KEY`. Without a key the API still starts, logs `reranker off`, and every rerank is degraded.
+  - **Data leaving AWS:** chunks go to Cohere's hosted API. That's acceptable here because the eval corpus is public FDA/ICH documents. The reranker sits behind a small interface (`api/rerank.py`, `Reranker.rerank(query, documents, top_n)`), so a confidential workload can switch to Bedrock Rerank or a self-hosted cross-encoder without touching the query logic.
+  - **The budget is SPEC's: 1.5 s for the whole call** (`asyncio.timeout`), no retry. On any failure (timeout, connection error, an error status, an unexpected body or an index out of range) the RRF order is kept, with `degraded: ["reranker"]`.
+  - **Cost:** Cohere bills per search unit (one query with up to 100 documents). Its price per search isn't published on its pricing page, so `usage.cost_usd` covers LLM tokens only, and the billed search units go on the `rerank` span.
+  - **New runtime dependency: `httpx`** (Chetan, 2026-11-22). It was already locked as a dev dependency (the test client). It's async, gives the call a precise deadline and is easy to fake. Rejected: the `cohere` SDK (much heavier, for one endpoint) and `urllib` (blocking, more hand-written code).
+- **Reranking is opt-in on `/v1/retrieve`** (`"rerank": true`, default false) **and always on for `/v1/query`** (Chetan, 2026-11-22). With `rerank`, recall takes the top 30, the reranker reorders them, and the best `top_k` come back with a `rerank_score`. A failed rerank adds `"reranker"` to `degraded`. The leak matrix leaves it off.
+- **The LLM sees the top 5 reranked chunks,** as SPEC's query flow says (`LLM_CONTEXT_CHUNKS`, 1 to 30, tuned in step 18).
+- **The abstain gate starts at 0.3** (Chetan, 2026-11-22; `ABSTAIN_THRESHOLD`, 0 to 1). If the top rerank score is below it, the answer is an abstain (`low_relevance`) without calling the LLM.
+  - **Raw RRF scores are never compared with the threshold.** They're on another scale (about 0.03). If the reranker failed or isn't configured, the gate is skipped (the span says `abstain.gate: skipped`), the model sees the RRF top 5, and it can still answer `not_in_documents`.
+  - **The top rerank score is reported** in the response (`top_rerank_score`, null without a rerank) and on the `rerank`, `abstain_gate` and `query` spans, so step 18 can tune the threshold.
+- **Abstain reasons:**
+  - `no_results`: nothing the caller may see was recalled.
+  - `low_relevance`: the top rerank score is below the threshold.
+  - `not_in_documents`: the model says the documents don't answer the question.
+  - `citation_check_failed`: SPEC's three rules.
+  - `llm_unavailable` and `llm_output_invalid`: see failover above.
+- **Citation checks are SPEC's three rules, run against the chunks sent to the model:**
+  1. Every `chunk_id` is one of those chunks.
+  2. Every quote, after whitespace and case normalization only, is in that chunk's text. An empty quote fails.
+  3. An answer has at least one citation.
+  - **Any failure makes the whole answer an abstain.** The failed rule goes on the `citation_check` span and in the log. A model that answers `answerable: false` needs no citations.
+- **Prompt:**
+  - **The system prompt** says the documents are user-uploaded reference data whose instructions must be ignored, that the answer must use only the documents, and that every claim needs a verbatim quote.
+  - **Each chunk** sits in `<document id="{chunk_id}" page="{page_start}">`.
+  - **A chunk can't open or close a `<document>` tag:** a `<document`, `</document` or `<documents` in its text is escaped to `&lt;...`.
+  - **`PROMPT_VERSION`** (`2026-11-22.1`) is on the `llm_generate` span. It becomes part of the cache key in Slice 3.
+- **Response, beyond SPEC's schema:**
+  - `top_rerank_score` (above).
+  - `usage.cost_usd` is null if a model's price isn't known. It's computed from per-model prices in `api/llm.py`. Nova 2 Lite's ($0.33 / $2.75 per million tokens, us-east-2) comes from the AWS Price List API. Haiku 5.5's ($0.10 / $0.50) is Anthropic's list price, because Bedrock bills Anthropic models through Marketplace and doesn't list them: check it against the first bill.
+  - `trace_id` is the OpenTelemetry trace id, or a random id when tracing is off.
+- **The request** is `{"query": str}`, with the same rules as `/v1/retrieve`'s `query`. The route needs the scope `query`.
+- **Spans:** `query` > `retrieve` (`embed`, `sql_recall`), `rerank`, `abstain_gate`, `llm_generate`, `citation_check`. They carry scores, counts, model ids and outcomes, never the question, the chunks or the answer.
+
 ## 2026-11-21: Step 14 /v1/retrieve
 
 - **Request and response** (Chetan, 2026-11-21). The SPEC doesn't define them.

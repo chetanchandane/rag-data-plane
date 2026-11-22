@@ -15,11 +15,14 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 import boto3
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from api import documents, retrieve, whoami
+from api import documents, query, retrieve, whoami
 from api.config import Settings
+from api.llm import generate, llm_client
+from api.rerank import CohereReranker, Reranker, cohere_api_key
 from api.uploads import make_s3_client
 from shared.db import create_pool
 from shared.embedding import embed_text, query_client
@@ -52,7 +55,7 @@ async def open_resources(app: FastAPI, service_name: str = "ragdp-api-local") ->
     settings = Settings.from_env()
     app.state.settings = settings
     ssm = None
-    if os.environ.get("HONEYCOMB_API_KEY_PARAM"):
+    if os.environ.get("HONEYCOMB_API_KEY_PARAM") or os.environ.get("COHERE_API_KEY_PARAM"):
         ssm = boto3.client("ssm", region_name=settings.aws_region)
     app.state.tracer_provider = setup_tracing(service_name, os.environ, ssm)
     app.state.pool = await create_pool(
@@ -65,6 +68,11 @@ async def open_resources(app: FastAPI, service_name: str = "ragdp-api-local") ->
     app.state.embed_query = functools.partial(
         embed_text, query_client(settings.aws_region), model_id=settings.embedding_model_id
     )
+    # One HTTP connection pool for the reranker, reused by warm invocations.
+    app.state.http = httpx.AsyncClient()
+    app.state.reranker = _reranker(settings, app.state.http, ssm)
+    # The answer, blocking (api/answering.py runs it on a worker thread).
+    app.state.generate = functools.partial(generate, llm_client(settings.aws_region))
     app.state.verifier = None
     if settings.jwt_issuer:
         # Imported only here: on Lambda JWT_ISSUER isn't set, API Gateway verifies tokens,
@@ -74,12 +82,27 @@ async def open_resources(app: FastAPI, service_name: str = "ragdp-api-local") ->
         app.state.verifier = TokenVerifier.from_issuer(settings.jwt_issuer)
 
 
+def _reranker(settings: Settings, http: httpx.AsyncClient, ssm) -> Reranker | None:
+    """Cohere, or None if no key is configured or it can't be read. Without a reranker the
+    API still answers, flagged degraded: ["reranker"], rather than failing to start."""
+    try:
+        api_key = cohere_api_key(os.environ, ssm)
+    except Exception:
+        log.exception("reranker off: the Cohere key could not be read")
+        return None
+    if api_key is None:
+        log.warning("reranker off: no Cohere key configured")
+        return None
+    return CohereReranker(http, api_key, settings.rerank_model_id)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await open_resources(app)
     try:
         yield
     finally:
+        await app.state.http.aclose()
         await app.state.pool.close()
 
 
@@ -96,6 +119,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="rag-data-plane", lifespan=lifespan)
     app.include_router(documents.router)
     app.include_router(retrieve.router)
+    app.include_router(query.router)
     app.include_router(whoami.router)
     for exc_class in DB_UNAVAILABLE:
         app.add_exception_handler(exc_class, _database_unavailable)

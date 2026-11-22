@@ -397,8 +397,8 @@ One SQL round trip does hybrid recall under RLS; everything after it has a timeo
 | GET | `/v1/documents/{id}` | Version status, attempts, last error |
 | POST | `/v1/documents/{id}/reindex` | Enqueue a `reindex` job |
 | DELETE | `/v1/documents/{id}` | Hide now, purge async |
-| POST | `/v1/retrieve` | Retrieval and rerank only (used by evals and load tests). Request and response: DECISIONS 2026-11-21, "Step 14" |
-| POST | `/v1/query` | Full answer |
+| POST | `/v1/retrieve` | Retrieval and rerank only (used by evals and load tests). Request and response: DECISIONS 2026-11-21, "Step 14"; reranking is opt-in (`"rerank": true`, DECISIONS 2026-11-22, "Step 15") |
+| POST | `/v1/query` | Full answer. Request, response details and abstain reasons: DECISIONS 2026-11-22, "Step 15" |
 | POST | `/v1/feedback` | Helpful yes/no tied to `trace_id` |
 | GET | `/healthz` | Liveness, no dependencies |
 
@@ -457,8 +457,8 @@ LIMIT 30;
 | Query embedding | 2 s, 1 retry | Lexical-only recall | `degraded: ["embedding"]` |
 | Postgres | 2 s statement timeout | 503 with `Retry-After` | none |
 | Reranker | 1.5 s, no retry | Keep RRF order | `degraded: ["reranker"]` |
-| Primary LLM | 20 s | Secondary model | `degraded: ["llm_primary"]` |
-| Secondary LLM | 20 s | Abstain | `abstain_reason: "llm_unavailable"` |
+| Primary LLM | 10 s (DECISIONS 2026-11-22: both models must fit in API Gateway's 30 s) | Secondary model | `degraded: ["llm_primary"]` |
+| Secondary LLM | 10 s | Abstain | `abstain_reason: "llm_unavailable"` |
 
 Circuit breakers open after 5 failures in 30 s and half-open after 30 s. On Lambda they are per instance, not global. That is a documented trade-off, and worth saying out loud in interviews.
 
@@ -477,6 +477,7 @@ Circuit breakers open after 5 failures in 30 s and half-open after 30 s. On Lamb
     {"chunk_id": "uuid", "doc_id": "uuid", "page_start": 4, "quote": "exact supporting text"}
   ],
   "degraded": [],
+  "top_rerank_score": 0.82,
   "trace_id": "string",
   "usage": {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
 }
@@ -690,5 +691,5 @@ Decision 8 blocks the reindex endpoint; settle the others before the slice that 
 | 4 | PDF parser | Decided: PyMuPDF only, tables via its own table finder (DECISIONS 2026-11-17) | Light enough for fast Lambda cold starts; one parser, one pass. Move to docling only if table questions score poorly |
 | 5 | Database | Neon now, RDS + RDS Proxy in the "At 100x" note | Zero idle cost, no NAT, built-in pooling and CI branches |
 | 6 | Streaming answers | Off in v1 | Later via Lambda response streaming (Function URL with Lambda Web Adapter) |
-| 7 | Reranker | Cohere Rerank | Confirm the key's terms allow this use and price it per 1,000 queries before CI runs it on every PR |
+| 7 | Reranker | Decided: Cohere Rerank 5 Fast with a Production key, behind an adapter (DECISIONS 2026-11-22) | Chunks of public FDA/ICH documents may go to Cohere's hosted API; a confidential workload swaps the adapter for Bedrock Rerank or a self-hosted cross-encoder. CI's leak matrix runs without reranking |
 | 8 | Reindex semantics | Undecided | The schema blocks both obvious meanings: `UNIQUE (doc_id, sha256)` prevents a new version of the same file, and forward-only activation would supersede a re-run of the live version. Settle before the reindex endpoint is built |

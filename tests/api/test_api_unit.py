@@ -132,8 +132,12 @@ _ENV = {
     "RAW_BUCKET": BUCKET,
     "AWS_REGION": "us-east-2",
     "EMBEDDING_MODEL_ID": "amazon.titan-embed-text-v2:0",
+    "RERANK_MODEL_ID": "rerank-v5.0-fast",
+    "LLM_PRIMARY_MODEL_ID": "us.anthropic.claude-haiku-5-5",
+    "LLM_SECONDARY_MODEL_ID": "us.amazon.nova-2-lite-v1:0",
     "JWT_ISSUER": "https://d111111abcdef8.cloudfront.net",
 }
+_OPTIONAL = ("LLM_PRIMARY_EFFORT", "ABSTAIN_THRESHOLD", "LLM_CONTEXT_CHUNKS")
 
 
 class FakeSsm:
@@ -148,6 +152,8 @@ class FakeSsm:
 def _set_env(monkeypatch, env):
     monkeypatch.delenv("DATABASE_URL_API_PARAM", raising=False)
     monkeypatch.delenv("JWT_ISSUER", raising=False)
+    for name in _OPTIONAL:
+        monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
 
@@ -194,3 +200,76 @@ def test_settings_fail_at_startup_on_a_bad_issuer(monkeypatch, issuer):
     _set_env(monkeypatch, _ENV | {"JWT_ISSUER": issuer})
     with pytest.raises(ValueError, match="JWT_ISSUER"):
         Settings.from_env(ssm=FakeSsm())
+
+
+def test_query_settings_have_defaults(monkeypatch):
+    _set_env(monkeypatch, _ENV)
+    settings = Settings.from_env(ssm=FakeSsm())
+    assert settings.rerank_model_id == "rerank-v5.0-fast"
+    assert settings.llm_primary_model_id == "us.anthropic.claude-haiku-5-5"
+    assert settings.llm_secondary_model_id == "us.amazon.nova-2-lite-v1:0"
+    assert (settings.llm_primary_effort, settings.abstain_threshold) == ("low", 0.3)
+    assert settings.llm_context_chunks == 5  # SPEC: rerank (top 5)
+
+
+def test_query_settings_can_be_overridden(monkeypatch):
+    overrides = {
+        "LLM_PRIMARY_EFFORT": "medium",
+        "ABSTAIN_THRESHOLD": "0.45",
+        "LLM_CONTEXT_CHUNKS": "8",
+    }
+    _set_env(monkeypatch, _ENV | overrides)
+    settings = Settings.from_env(ssm=FakeSsm())
+    assert (settings.llm_primary_effort, settings.abstain_threshold) == ("medium", 0.45)
+    assert settings.llm_context_chunks == 8
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("ABSTAIN_THRESHOLD", "1.5"),
+        ("ABSTAIN_THRESHOLD", "-0.1"),
+        ("LLM_CONTEXT_CHUNKS", "0"),
+        ("LLM_CONTEXT_CHUNKS", "31"),
+        ("LLM_PRIMARY_EFFORT", "max"),
+    ],
+)
+def test_query_settings_fail_at_startup_when_out_of_range(monkeypatch, name, value):
+    _set_env(monkeypatch, _ENV | {name: value})
+    with pytest.raises(ValueError, match=name):
+        Settings.from_env(ssm=FakeSsm())
+
+
+@pytest.mark.parametrize(
+    "name", ["RERANK_MODEL_ID", "LLM_PRIMARY_MODEL_ID", "LLM_SECONDARY_MODEL_ID"]
+)
+def test_model_ids_are_required(monkeypatch, name):
+    _set_env(monkeypatch, _ENV | {name: ""})
+    with pytest.raises(RuntimeError, match=name):
+        Settings.from_env(ssm=FakeSsm())
+
+
+# --- /v1/query request validation (rejected before the database) --------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"query": ""}, {"query": "   "}, {"query": "x" * 2001}, {"query": 42}],
+    ids=["missing", "empty", "blank", "too_long", "not_a_string"],
+)
+async def test_query_rejects_a_bad_body(body):
+    async with client(app()) as c:
+        resp = await c.post("/v1/query", json=body)
+    assert resp.status_code == 422
+
+
+async def test_query_needs_a_token():
+    async with client(app(), token=None) as c:
+        resp = await c.post("/v1/query", json={"query": "q"})
+    assert resp.status_code == 401
+
+
+async def test_retrieve_rerank_must_be_a_boolean():
+    async with client(app()) as c:
+        resp = await c.post("/v1/retrieve", json={"query": "q", "rerank": "yes"})
+    assert resp.status_code == 422

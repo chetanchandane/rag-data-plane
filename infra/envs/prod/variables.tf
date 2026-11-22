@@ -15,6 +15,16 @@ variable "embedding_model_id" {
   type = string
 }
 
+variable "llm_primary_model_id" {
+  description = "Primary LLM's inference profile ID (us.*)."
+  type        = string
+}
+
+variable "llm_secondary_model_id" {
+  description = "Secondary LLM's inference profile ID (us.*)."
+  type        = string
+}
+
 variable "worker_image_tag" {
   description = "Worker image tag in ECR. The deploy workflow passes the git SHA."
   type        = string

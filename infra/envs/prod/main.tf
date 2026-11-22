@@ -89,9 +89,14 @@ module "api" {
   # Tracing (step 14): the same key as the worker's, dataset ragdp-api.
   honeycomb_api_key_param_name = module.secrets.names.honeycomb_api_key
   honeycomb_api_key_param_arn  = module.secrets.arns.honeycomb_api_key
-  workload_role_path           = local.workload_role_path
-  workload_boundary_arn        = local.workload_boundary_arn
-  log_retention_days           = 14
+  # Answers (step 15): Cohere rerank, then the LLMs through US inference profiles.
+  cohere_api_key_param_name = module.secrets.names.cohere_api_key
+  cohere_api_key_param_arn  = module.secrets.arns.cohere_api_key
+  llm_primary_model_id      = var.llm_primary_model_id
+  llm_secondary_model_id    = var.llm_secondary_model_id
+  workload_role_path        = local.workload_role_path
+  workload_boundary_arn     = local.workload_boundary_arn
+  log_retention_days        = 14
 }
 
 module "observability" {

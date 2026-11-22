@@ -10,6 +10,20 @@ locals {
   api_log     = "/aws/lambda/${var.name_prefix}-api"
   api_log_arn = "arn:aws:logs:${var.region}:${var.account_id}:log-group:${local.api_log}"
 
+  # The LLMs' inference profiles, and the foundation models each one routes to: a us.*
+  # profile sends a request to the same model in any of llm_inference_regions.
+  llm_profile_ids = [var.llm_primary_model_id, var.llm_secondary_model_id]
+  llm_profile_arns = [
+    for id in local.llm_profile_ids :
+    "arn:aws:bedrock:${var.region}:${var.account_id}:inference-profile/${id}"
+  ]
+  llm_model_arns = flatten([
+    for id in local.llm_profile_ids : [
+      for region in var.llm_inference_regions :
+      "arn:aws:bedrock:${region}::foundation-model/${trimprefix(id, "us.")}"
+    ]
+  ])
+
   # Route -> the scopes a token needs (any one of them). Coarse API permissions at the edge;
   # which rows a caller sees is still decided by role_level and RLS. whoami needs only a
   # valid token.
@@ -17,7 +31,8 @@ locals {
     "GET /v1/whoami"         = []
     "POST /v1/documents"     = ["documents:write"]
     "GET /v1/documents/{id}" = ["documents:read"]
-    "POST /v1/retrieve"      = ["retrieve"] # its own scope: /v1/query (step 15) spends LLM money
+    "POST /v1/retrieve"      = ["retrieve"] # its own scope: /v1/query spends LLM money
+    "POST /v1/query"         = ["query"]
   }
 }
 
@@ -109,6 +124,32 @@ data "aws_iam_policy_document" "api" {
     resources = ["arn:aws:bedrock:${var.region}::foundation-model/${var.embedding_model_id}"]
   }
 
+  # Answers (step 15): the two LLMs through their US inference profiles. Invoking a profile
+  # needs the profile itself and the model in every Region it may route to; the condition
+  # allows those models only through these profiles, never called directly.
+  statement {
+    sid       = "GenerateThroughInferenceProfiles"
+    actions   = ["bedrock:InvokeModel"]
+    resources = local.llm_profile_arns
+  }
+
+  statement {
+    sid       = "GenerateOnRoutedModels"
+    actions   = ["bedrock:InvokeModel"]
+    resources = local.llm_model_arns
+    condition {
+      test     = "StringLike"
+      variable = "bedrock:InferenceProfileArn"
+      values   = local.llm_profile_arns
+    }
+  }
+
+  statement {
+    sid       = "ReadRerankKey"
+    actions   = ["ssm:GetParameter"]
+    resources = [var.cohere_api_key_param_arn]
+  }
+
   # Presigned upload URLs are signed with this role's credentials, so S3 checks this
   # permission when the client uploads. Uploads go under raw/ only.
   statement {
@@ -138,14 +179,16 @@ resource "aws_lambda_function" "api" {
   image_uri     = "${aws_ecr_repository.api.repository_url}:${var.api_image_tag}"
   architectures = ["x86_64"] # images are built for linux/amd64
 
-  timeout     = 15   # today's routes; /v1/query (step 15) may need more, up to API Gateway's 30 s
+  # /v1/query's worst case: embedding, SQL, reranker, then both LLMs (10 s each, api/llm.py).
+  # Just under API Gateway's 30 s integration timeout, so the Lambda gives up first.
+  timeout     = 29
   memory_size = 1024 # Lambda CPU scales with memory: a faster cold start for pennies
 
   # No reserved concurrency: the account limit of 10 allows none (DECISIONS, step 8). Route
   # throttling on the stage caps the request rate instead.
 
-  # Names only. The DB URL and the Honeycomb key are read from SSM at cold start, never put
-  # here. AWS_REGION is set by Lambda. No JWT_ISSUER: API Gateway verifies tokens
+  # Names only. The DB URL and the Honeycomb and Cohere keys are read from SSM at cold start,
+  # never put here. AWS_REGION is set by Lambda. No JWT_ISSUER: API Gateway verifies tokens
   # (api/auth.py).
   environment {
     variables = {
@@ -153,6 +196,13 @@ resource "aws_lambda_function" "api" {
       DATABASE_URL_API_PARAM  = var.database_url_param_name
       EMBEDDING_MODEL_ID      = var.embedding_model_id
       HONEYCOMB_API_KEY_PARAM = var.honeycomb_api_key_param_name
+      COHERE_API_KEY_PARAM    = var.cohere_api_key_param_name
+      RERANK_MODEL_ID         = var.rerank_model_id
+      LLM_PRIMARY_MODEL_ID    = var.llm_primary_model_id
+      LLM_SECONDARY_MODEL_ID  = var.llm_secondary_model_id
+      LLM_PRIMARY_EFFORT      = var.llm_primary_effort
+      ABSTAIN_THRESHOLD       = tostring(var.abstain_threshold)
+      LLM_CONTEXT_CHUNKS      = tostring(var.llm_context_chunks)
     }
   }
 

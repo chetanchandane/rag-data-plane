@@ -743,6 +743,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "boto3" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "mangum" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
@@ -755,7 +756,6 @@ dependencies = [
 dev = [
     { name = "alembic" },
     { name = "botocore", extra = ["crt"] },
-    { name = "httpx" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "pytest" },
@@ -770,6 +770,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.32.0" },
     { name = "boto3", specifier = ">=1.44.5" },
     { name = "fastapi", specifier = ">=0.165.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "mangum", specifier = ">=0.22.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.45.2" },
     { name = "opentelemetry-sdk", specifier = ">=1.45.2" },
@@ -782,7 +783,6 @@ requires-dist = [
 dev = [
     { name = "alembic", specifier = ">=1.20.1" },
     { name = "botocore", extras = ["crt"], specifier = ">=1.44.5" },
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.9" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.1" },
     { name = "pytest", specifier = ">=9.2.0" },

@@ -38,6 +38,65 @@ variable "embedding_model_id" {
   type        = string
 }
 
+variable "llm_primary_model_id" {
+  description = "Primary LLM: a US cross-region inference profile ID, called through Converse."
+  type        = string
+
+  validation {
+    condition     = startswith(var.llm_primary_model_id, "us.")
+    error_message = "Use a us.* inference profile, so inference stays in US Regions."
+  }
+}
+
+variable "llm_secondary_model_id" {
+  description = "Secondary LLM, used when the primary fails: a us.* inference profile ID."
+  type        = string
+
+  validation {
+    condition     = startswith(var.llm_secondary_model_id, "us.")
+    error_message = "Use a us.* inference profile, so inference stays in US Regions."
+  }
+}
+
+variable "llm_inference_regions" {
+  description = "Regions the us.* profiles route requests to (aws bedrock list-inference-profiles)."
+  type        = list(string)
+  default     = ["us-east-1", "us-east-2", "us-west-2"]
+}
+
+variable "llm_primary_effort" {
+  description = "Claude's effort level (low, medium or high)."
+  type        = string
+  default     = "low"
+}
+
+variable "rerank_model_id" {
+  description = "Cohere rerank model."
+  type        = string
+  default     = "rerank-v5.0-fast"
+}
+
+variable "cohere_api_key_param_name" {
+  description = "SSM SecureString holding the Cohere Production key. Read at cold start."
+  type        = string
+}
+
+variable "cohere_api_key_param_arn" {
+  type = string
+}
+
+variable "abstain_threshold" {
+  description = "Top rerank score below which /v1/query abstains without calling the LLM."
+  type        = number
+  default     = 0.3
+}
+
+variable "llm_context_chunks" {
+  description = "Reranked chunks sent to the LLM (SPEC: rerank top 5)."
+  type        = number
+  default     = 5
+}
+
 variable "honeycomb_api_key_param_name" {
   description = "SSM SecureString holding the Honeycomb ingest key. The API reads it at cold start."
   type        = string

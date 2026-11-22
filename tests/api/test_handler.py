@@ -12,7 +12,7 @@ import asyncpg
 
 from api.app import create_app
 from api.handler import IDLE_RESET_SECONDS, ApiHandler
-from tests.api.apphelpers import BUCKET, MODEL_ID, REGION, fake_s3
+from tests.api.apphelpers import fake_s3, make_settings, no_llm
 
 TENANT = uuid.UUID("7d1e0000-0000-4000-8000-000000000001")
 
@@ -43,18 +43,12 @@ def make_handler(pool: FakePool | None = None) -> tuple[ApiHandler, list[int]]:
     pool = pool or FakePool()
 
     async def open_fake(app) -> None:
-        from api.config import Settings
-
         opened.append(1)
-        app.state.settings = Settings(
-            database_url="unused",
-            raw_bucket=BUCKET,
-            aws_region=REGION,
-            embedding_model_id=MODEL_ID,
-            jwt_issuer=None,
-        )
+        app.state.settings = make_settings(jwt_issuer=None)
         app.state.pool = pool
         app.state.s3 = fake_s3()
+        app.state.reranker = None
+        app.state.generate = no_llm
         app.state.verifier = None  # on Lambda only API Gateway's claims count
 
     return ApiHandler(create_app(), open_app=open_fake), opened

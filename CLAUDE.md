@@ -62,7 +62,7 @@ uv run pytest -m db                   # DB tests against the Neon dev branch
 uv run python db/bootstrap.py         # once per dev branch: roles, schema grants, vector extension
 uv run alembic upgrade head           # migrations (uses DATABASE_URL_OWNER)
 PYTHONPATH=services uv run python -m worker.local <pdf> --tenant <uuid> --doc <uuid> --version 1  # one local ingest (real Bedrock)
-PYTHONPATH=services uv run python scripts/issuer.py mint --tenant <uuid> --role-level 2 --scope documents:read --scope documents:write --scope retrieve  # a 15-minute access token
+PYTHONPATH=services uv run python scripts/issuer.py mint --tenant <uuid> --role-level 2 --scope documents:read --scope documents:write --scope retrieve --scope query  # a 15-minute access token
 terraform -chdir=infra/envs/prod fmt -recursive && terraform -chdir=infra/envs/prod validate
 ```
 
@@ -76,8 +76,13 @@ DATABASE_URL_API=       # app_api role, pooled endpoint
 DATABASE_URL_INGEST=    # app_ingest role, pooled endpoint
 AWS_REGION=us-east-2
 EMBEDDING_MODEL_ID=amazon.titan-embed-text-v2:0
+RERANK_MODEL_ID=rerank-v5.0-fast
+LLM_PRIMARY_MODEL_ID=us.anthropic.claude-haiku-5-5
+LLM_SECONDARY_MODEL_ID=us.amazon.nova-2-lite-v1:0
+# LLM_PRIMARY_EFFORT=low  ABSTAIN_THRESHOLD=0.3  LLM_CONTEXT_CHUNKS=5   (defaults)
 RAW_BUCKET=
 HONEYCOMB_API_KEY=      # optional, local traces only; Lambda reads its key from SSM
+COHERE_API_KEY=         # optional locally (without it: no reranking, degraded); Lambda reads SSM
 JWT_ISSUER=             # token issuer URL (terraform output issuer_url): issuer.py mint signs for it, api.local verifies against it
 ```
 
