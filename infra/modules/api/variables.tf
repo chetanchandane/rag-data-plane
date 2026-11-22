@@ -33,6 +33,20 @@ variable "database_url_param_arn" {
   type = string
 }
 
+variable "embedding_model_id" {
+  description = "Bedrock model for query embeddings: must be the worker's, so vectors are comparable."
+  type        = string
+}
+
+variable "honeycomb_api_key_param_name" {
+  description = "SSM SecureString holding the Honeycomb ingest key. The API reads it at cold start."
+  type        = string
+}
+
+variable "honeycomb_api_key_param_arn" {
+  type = string
+}
+
 variable "jwt_issuer" {
   description = "The JWT authorizer's issuer: the tokens' `iss`, no trailing slash. API Gateway finds the JWKS through its discovery document."
   type        = string

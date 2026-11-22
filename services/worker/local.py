@@ -29,9 +29,9 @@ from dotenv import load_dotenv
 from opentelemetry import trace
 
 from shared.db import create_pool, rls_transaction
+from shared.embedding import embed_batch, make_bedrock_client
 from shared.errors import PermanentError
 from shared.telemetry import flush, setup_tracing
-from worker.embedding import embed_batch, make_bedrock_client
 from worker.pipeline import ingest_version
 
 

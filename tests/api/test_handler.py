@@ -12,7 +12,7 @@ import asyncpg
 
 from api.app import create_app
 from api.handler import IDLE_RESET_SECONDS, ApiHandler
-from tests.api.apphelpers import BUCKET, REGION, fake_s3
+from tests.api.apphelpers import BUCKET, MODEL_ID, REGION, fake_s3
 
 TENANT = uuid.UUID("7d1e0000-0000-4000-8000-000000000001")
 
@@ -47,7 +47,11 @@ def make_handler(pool: FakePool | None = None) -> tuple[ApiHandler, list[int]]:
 
         opened.append(1)
         app.state.settings = Settings(
-            database_url="unused", raw_bucket=BUCKET, aws_region=REGION, jwt_issuer=None
+            database_url="unused",
+            raw_bucket=BUCKET,
+            aws_region=REGION,
+            embedding_model_id=MODEL_ID,
+            jwt_issuer=None,
         )
         app.state.pool = pool
         app.state.s3 = fake_s3()

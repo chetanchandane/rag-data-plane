@@ -76,8 +76,10 @@ Both images carry the same tag, so one `TAG` serves both. Then push again (or re
 ```bash
 export PYTHONPATH=services API_URL=$(terraform -chdir=infra/envs/prod output -raw api_url)
 TOKEN=$(uv run python scripts/issuer.py mint --tenant <uuid> --role-level 2 \
-  --scope documents:read --scope documents:write)
+  --scope documents:read --scope documents:write --scope retrieve)
 curl -sS -H "Authorization: Bearer $TOKEN" "$API_URL/v1/whoami"
+curl -sS -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"query": "policy enforcement point", "top_k": 5}' "$API_URL/v1/retrieve"
 ```
 
 API Gateway refuses a missing, expired or wrong-audience token (401) and a token without the route's scope (403) before the Lambda runs. The access log shows each request's `authorizerError`, and an empty `integrationStatus` when the Lambda wasn't invoked:

@@ -28,6 +28,7 @@ ISSUER = "https://d111111abcdef8.cloudfront.net"
 JWKS_URI = f"{ISSUER}/.well-known/jwks.json"
 BUCKET = "ragdp-raw-test"
 REGION = "us-east-2"
+MODEL_ID = "amazon.titan-embed-text-v2:0"
 
 
 def fake_s3():
@@ -84,6 +85,7 @@ def build_app(pool, tenant_id: uuid.UUID, role_level: int) -> FastAPI:
         database_url="unused-in-tests",
         raw_bucket=BUCKET,
         aws_region=REGION,
+        embedding_model_id=MODEL_ID,
         jwt_issuer=ISSUER,
     )
     app.state.pool = pool

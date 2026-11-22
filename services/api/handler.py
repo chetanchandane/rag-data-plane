@@ -16,6 +16,7 @@ and the request gets a 503 with Retry-After (api/app.py).
 """
 
 import asyncio
+import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -25,18 +26,23 @@ from fastapi import FastAPI
 from mangum import Mangum
 
 from api.app import create_app, open_resources
+from shared.telemetry import flush
 
 logging.getLogger().setLevel(logging.INFO)  # Lambda's root logger defaults to WARNING
 
 # Below the idle timeouts of Neon's pooler and of the network path to it.
 IDLE_RESET_SECONDS = 60
+SERVICE_NAME = "ragdp-api"  # also the Honeycomb dataset
+_open_on_lambda = functools.partial(open_resources, service_name=SERVICE_NAME)
 
 
 class ApiHandler:
     """Callable as handler(event, context). One instance per container."""
 
     def __init__(
-        self, app: FastAPI, open_app: Callable[[FastAPI], Awaitable[None]] = open_resources
+        self,
+        app: FastAPI,
+        open_app: Callable[[FastAPI], Awaitable[None]] = _open_on_lambda,
     ) -> None:
         self.app = app
         self.open_app = open_app
@@ -59,7 +65,12 @@ class ApiHandler:
             # Connections opened before the gap are closed and reopened on next acquire.
             self.loop.run_until_complete(self.app.state.pool.expire_connections())
         self.last_request_at = now
-        return self.mangum(event, context)
+        try:
+            return self.mangum(event, context)
+        finally:
+            # Lambda freezes the container as soon as this returns, so this request's spans
+            # are sent now (at most 3 s; errors are logged and dropped).
+            flush(getattr(self.app.state, "tracer_provider", None))
 
 
 handler = ApiHandler(create_app())

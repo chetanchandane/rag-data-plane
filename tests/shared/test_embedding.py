@@ -1,4 +1,4 @@
-"""Unit tests for embed_batch (a fake Bedrock client; never calls AWS)."""
+"""Unit tests for shared/embedding.py (a fake Bedrock client; never calls AWS)."""
 
 import io
 import json
@@ -6,7 +6,13 @@ import threading
 
 import pytest
 
-from worker.embedding import EMBEDDING_DIMENSIONS, embed_batch, make_bedrock_client
+from shared.embedding import (
+    EMBEDDING_DIMENSIONS,
+    embed_batch,
+    embed_text,
+    make_bedrock_client,
+    query_client,
+)
 
 MODEL = "amazon.titan-embed-text-v2:0"
 
@@ -58,3 +64,18 @@ def test_client_retries_throttling_with_backoff_five_times() -> None:
     client = make_bedrock_client("us-east-2")  # no credentials needed until a call is made
     assert client.meta.config.retries == {"mode": "standard", "total_max_attempts": 5}
     assert client.meta.region_name == "us-east-2"
+
+
+def test_a_query_is_embedded_like_a_chunk() -> None:
+    # Same model, dimensions and normalization, so query and chunk vectors are comparable.
+    fake = FakeBedrock()
+    assert embed_text(fake, "chunk 7", model_id=MODEL)[0] == 7.0
+    (request,) = fake.requests
+    assert request["body"] == {"inputText": "chunk 7", "dimensions": 1024, "normalize": True}
+
+
+def test_the_query_client_has_the_specs_budget() -> None:
+    # SPEC: query embedding, 2 s timeout, 1 retry (2 attempts in total).
+    config = query_client("us-east-2").meta.config
+    assert config.retries == {"mode": "standard", "total_max_attempts": 2}
+    assert (config.connect_timeout, config.read_timeout) == (2, 2)

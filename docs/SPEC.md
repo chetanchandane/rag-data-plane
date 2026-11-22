@@ -397,7 +397,7 @@ One SQL round trip does hybrid recall under RLS; everything after it has a timeo
 | GET | `/v1/documents/{id}` | Version status, attempts, last error |
 | POST | `/v1/documents/{id}/reindex` | Enqueue a `reindex` job |
 | DELETE | `/v1/documents/{id}` | Hide now, purge async |
-| POST | `/v1/retrieve` | Retrieval and rerank only (used by evals and load tests) |
+| POST | `/v1/retrieve` | Retrieval and rerank only (used by evals and load tests). Request and response: DECISIONS 2026-11-21, "Step 14" |
 | POST | `/v1/query` | Full answer |
 | POST | `/v1/feedback` | Helpful yes/no tied to `trace_id` |
 | GET | `/healthz` | Liveness, no dependencies |

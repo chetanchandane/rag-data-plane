@@ -29,10 +29,10 @@ from opentelemetry.sdk.trace import TracerProvider
 from pydantic import ValidationError
 
 from shared.db import create_pool
+from shared.embedding import embed_batch, make_bedrock_client
 from shared.errors import MAX_REASON_LENGTH, PermanentError
 from shared.jobs import IngestFileJob, parse_ingest_job
 from shared.telemetry import flush, setup_tracing
-from worker.embedding import embed_batch, make_bedrock_client
 from worker.pipeline import IngestResult, ingest_version
 
 log = logging.getLogger(__name__)

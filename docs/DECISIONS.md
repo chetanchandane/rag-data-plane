@@ -2,6 +2,30 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-21: Step 14 /v1/retrieve
+
+- **Request and response** (Chetan, 2026-11-21). The SPEC doesn't define them.
+  - **Request:** `{"query": str, "top_k": int}`. `query` is 1 to 2000 characters and not blank. `top_k` is 1 to 30, default 30 (SPEC's top 30). Like `POST /v1/documents`, fields are strict, and unknown fields (such as `tenant_id`) are ignored.
+  - **Response:** `{"chunks": [...], "lexical_weight": float, "degraded": [...]}`.
+    - Each chunk has `chunk_id`, `doc_id`, `version`, `page_start`, `page_end`, `section_path` (a string, as stored), `content` and `rrf_score`.
+    - `lexical_weight` is reported so evals can see which weight a query got.
+- **The SQL is SPEC's, verbatim,** with the final `LIMIT` as a parameter for `top_k`. It runs under `rls_transaction` with the claims' tenant and role level, with no tenant or role predicate of its own.
+- **The lexical-weight rule:** 2.0 when the query has a code-like token or a quoted phrase, otherwise 1.0.
+  - **A code-like token** is SPEC's example pattern as a whole token: `\b[A-Z]{1,4}-?\d{2,6}\b`, so `SP800`, `AC-12` or `E10`, but not `AC-2`.
+  - **A quoted phrase** is `"..."`.
+  - Both are tuned on the golden set later. A first sign, from a run against the NIST document: `SP800-207` becomes one lexeme (`sp800-207`), but the PDF says `SP 800-207` and `800-207`. So that query's lexical branch was empty even though the weight doubled. Tokenization of codes is worth measuring there.
+- **Reranking moves to step 15** (Chetan, 2026-11-21), with the Cohere key (Open decision #7), the `rerank` request option and the `rerank` span. The leak matrix runs without reranking anyway.
+- **If the query can't be embedded, recall is lexical-only and the response says `degraded: ["embedding"]`** (Chetan, 2026-11-21: SPEC's fallback, built now rather than in Slice 3).
+  - **The query client has SPEC's budget:** 2 s connect and read timeouts, 2 attempts in total.
+  - **The fallback runs on Bedrock errors only** (`BotoCoreError`, `ClientError`). Any other error is a bug and stays a 500.
+  - **Its scores** are the lexical branch's share of the fused score (`w / (60 + rank)`), so they mean the same thing in both modes.
+- **`POST /v1/retrieve` needs the scope `retrieve`** (Chetan, 2026-11-21). It doesn't share one with `/v1/query`, so an eval or load-test token can search without being able to spend LLM money.
+- **The embedding code moves to `services/shared/embedding.py`.** The worker embeds chunks and the API embeds queries with the same model, dimensions and normalization. The worker keeps its own retry budget (5 attempts, 30 s).
+- **The API is traced like the worker:**
+  - **Spans:** `retrieve` > `embed`, `sql_recall`. The attributes are `top_k`, `lexical_weight`, the mode (`hybrid` or `lexical_only`), the chunk count and `degraded`, never the query or any chunk text.
+  - **Datasets:** `ragdp-api` on Lambda, flushed after each invocation; `ragdp-api-local` for `api.local`.
+  - **The key:** the API reads the same Honeycomb key parameter as the worker.
+
 ## 2026-11-21: Step 13 API on Lambda
 
 - **Routes need scopes, checked by API Gateway before the Lambda runs** (Chetan, 2026-11-21). `POST /v1/documents` needs `documents:write` and `GET /v1/documents/{id}` needs `documents:read`. A token passes if its `scope` claim includes the route's scope.

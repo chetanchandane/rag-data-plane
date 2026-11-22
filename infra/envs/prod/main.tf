@@ -85,9 +85,13 @@ module "api" {
   database_url_param_name = module.secrets.names.database_url_api
   database_url_param_arn  = module.secrets.arns.database_url_api
   jwt_issuer              = module.issuer.issuer_url
-  workload_role_path      = local.workload_role_path
-  workload_boundary_arn   = local.workload_boundary_arn
-  log_retention_days      = 14
+  embedding_model_id      = var.embedding_model_id
+  # Tracing (step 14): the same key as the worker's, dataset ragdp-api.
+  honeycomb_api_key_param_name = module.secrets.names.honeycomb_api_key
+  honeycomb_api_key_param_arn  = module.secrets.arns.honeycomb_api_key
+  workload_role_path           = local.workload_role_path
+  workload_boundary_arn        = local.workload_boundary_arn
+  log_retention_days           = 14
 }
 
 module "observability" {

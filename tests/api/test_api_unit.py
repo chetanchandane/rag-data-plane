@@ -131,6 +131,7 @@ _ENV = {
     "DATABASE_URL_API": "postgresql://app_api@host/db",
     "RAW_BUCKET": BUCKET,
     "AWS_REGION": "us-east-2",
+    "EMBEDDING_MODEL_ID": "amazon.titan-embed-text-v2:0",
     "JWT_ISSUER": "https://d111111abcdef8.cloudfront.net",
 }
 

@@ -7,18 +7,23 @@ Served two ways:
     around every invocation, so the handler turns it off and calls open_resources() itself.
 """
 
+import functools
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import asyncpg
+import boto3
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from api import documents, whoami
+from api import documents, retrieve, whoami
 from api.config import Settings
 from api.uploads import make_s3_client
 from shared.db import create_pool
+from shared.embedding import embed_text, query_client
+from shared.telemetry import setup_tracing
 
 # A query that gets no answer in this long fails instead of hanging: above the 2 s
 # statement_timeout, which Postgres enforces itself while the connection is alive.
@@ -41,15 +46,25 @@ RETRY_AFTER_SECONDS = 1
 log = logging.getLogger(__name__)
 
 
-async def open_resources(app: FastAPI) -> None:
+async def open_resources(app: FastAPI, service_name: str = "ragdp-api-local") -> None:
+    """service_name is also the Honeycomb dataset: ragdp-api on Lambda, ragdp-api-local for
+    api.local. Tracing stays off without a Honeycomb key (shared/telemetry.py)."""
     settings = Settings.from_env()
     app.state.settings = settings
+    ssm = None
+    if os.environ.get("HONEYCOMB_API_KEY_PARAM"):
+        ssm = boto3.client("ssm", region_name=settings.aws_region)
+    app.state.tracer_provider = setup_tracing(service_name, os.environ, ssm)
     app.state.pool = await create_pool(
         settings.database_url,
         command_timeout=DB_COMMAND_TIMEOUT_SECONDS,
         connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
     )
     app.state.s3 = make_s3_client(settings.aws_region)
+    # The query's embedding, blocking (api/retrieval.py runs it on a worker thread).
+    app.state.embed_query = functools.partial(
+        embed_text, query_client(settings.aws_region), model_id=settings.embedding_model_id
+    )
     app.state.verifier = None
     if settings.jwt_issuer:
         # Imported only here: on Lambda JWT_ISSUER isn't set, API Gateway verifies tokens,
@@ -80,6 +95,7 @@ async def _database_unavailable(request: Request, exc: Exception) -> JSONRespons
 def create_app() -> FastAPI:
     app = FastAPI(title="rag-data-plane", lifespan=lifespan)
     app.include_router(documents.router)
+    app.include_router(retrieve.router)
     app.include_router(whoami.router)
     for exc_class in DB_UNAVAILABLE:
         app.add_exception_handler(exc_class, _database_unavailable)

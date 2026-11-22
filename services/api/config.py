@@ -24,6 +24,8 @@ class Settings:
     database_url: str  # app_api role, pooled endpoint
     raw_bucket: str
     aws_region: str
+    # Must be the worker's model, or query and chunk vectors aren't comparable.
+    embedding_model_id: str
     # The token issuer the API verifies tokens against when no API Gateway is in front
     # (api/auth.py). Not set on Lambda: there API Gateway's authorizer verifies them.
     jwt_issuer: str | None = None
@@ -36,6 +38,7 @@ class Settings:
             database_url=_database_url(ssm),
             raw_bucket=_required("RAW_BUCKET"),
             aws_region=_required("AWS_REGION"),
+            embedding_model_id=_required("EMBEDDING_MODEL_ID"),
             jwt_issuer=_issuer(),
         )
 

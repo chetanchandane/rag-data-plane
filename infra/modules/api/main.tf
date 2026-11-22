@@ -17,6 +17,7 @@ locals {
     "GET /v1/whoami"         = []
     "POST /v1/documents"     = ["documents:write"]
     "GET /v1/documents/{id}" = ["documents:read"]
+    "POST /v1/retrieve"      = ["retrieve"] # its own scope: /v1/query (step 15) spends LLM money
   }
 }
 
@@ -95,6 +96,19 @@ data "aws_iam_policy_document" "api" {
     }
   }
 
+  statement {
+    sid       = "ReadTracingKey"
+    actions   = ["ssm:GetParameter"]
+    resources = [var.honeycomb_api_key_param_arn]
+  }
+
+  # The query's embedding: the same single model the worker embeds chunks with.
+  statement {
+    sid       = "EmbedQueriesWithOneModel"
+    actions   = ["bedrock:InvokeModel"]
+    resources = ["arn:aws:bedrock:${var.region}::foundation-model/${var.embedding_model_id}"]
+  }
+
   # Presigned upload URLs are signed with this role's credentials, so S3 checks this
   # permission when the client uploads. Uploads go under raw/ only.
   statement {
@@ -130,12 +144,15 @@ resource "aws_lambda_function" "api" {
   # No reserved concurrency: the account limit of 10 allows none (DECISIONS, step 8). Route
   # throttling on the stage caps the request rate instead.
 
-  # Names only. The DB URL is read from SSM at cold start, never put here. AWS_REGION is set
-  # by Lambda. No JWT_ISSUER: API Gateway verifies tokens (api/auth.py).
+  # Names only. The DB URL and the Honeycomb key are read from SSM at cold start, never put
+  # here. AWS_REGION is set by Lambda. No JWT_ISSUER: API Gateway verifies tokens
+  # (api/auth.py).
   environment {
     variables = {
-      RAW_BUCKET             = var.raw_bucket_name
-      DATABASE_URL_API_PARAM = var.database_url_param_name
+      RAW_BUCKET              = var.raw_bucket_name
+      DATABASE_URL_API_PARAM  = var.database_url_param_name
+      EMBEDDING_MODEL_ID      = var.embedding_model_id
+      HONEYCOMB_API_KEY_PARAM = var.honeycomb_api_key_param_name
     }
   }
 
