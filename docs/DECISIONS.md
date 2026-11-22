@@ -34,6 +34,7 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
   - **`scripts/eval_corpus.py load` refuses any other database:** the URL's host must be the endpoint named by `NEON_EVAL_ENDPOINT_ID`, and not `NEON_DEV_ENDPOINT_ID`.
   - **It's idempotent:** document ids are uuid5 of tenant and external id, and ingestion skips finished versions.
   - **`worker.local.register()` takes an optional `external_id`** for this.
+- **Loaded 2026-11-22:** all 24 documents reached `indexed` on the `eval` branch (453 chunks: 441 FDA, matching the local parse, plus one per synthetic document). Checked as `app_api` under RLS for each persona: a-r1 sees 14 documents (443 chunks) and only `CANARY-TA-R1`, up to a-r3 with 16 documents and the three tenant A canaries; b-r1 to b-r3 see 6 to 8 documents and only tenant B's canaries up to their level. A second `load` skipped all 24.
 - **Findings to measure in step 18:**
   - **Ligatures:** the worker keeps ligature characters from PDFs that use them. None of the 12 FDA PDFs do, but another tenant's might, and then words like "office" would miss in full-text search.
   - **Line-break hyphens:** the parser keeps them (for example "relia-bility" in E8(R1)), which splits those words for full-text search.
