@@ -570,7 +570,7 @@ scripts/                  # issuer.py: token issuer keys and minting (laptop onl
 
 Every claim in Scope maps to a test that runs in CI or a report committed to the repo. A leak count above zero fails the build, with no threshold.
 
-**Corpus and golden set.** Since the service is domain-agnostic, reuse ClinRAG's FDA/ICH corpus and its 294-question golden set. That gives a large eval from day one and a direct comparison: same questions, Qdrant pipeline versus pgvector + RLS pipeline. Add one small synthetic corpus per extra tenant for the isolation tests.
+**Corpus and golden set.** Since the service is domain-agnostic, the corpus is FDA/ICH clinical-trial guidance, like ClinRAG's. ClinRAG's own files and 294 questions no longer exist, so both are rebuilt (DECISIONS 2026-11-22, "Step 16"): 12 FDA guidances (448 pages), a golden set of 150 answerable and 30 unanswerable questions generated from their chunks, and extraction questions. The comparison with ClinRAG uses its published numbers, labeled as a different corpus and question set. Add one small synthetic corpus per extra tenant for the isolation tests.
 
 **Leak matrix (CI, every PR)**
 
@@ -658,7 +658,7 @@ Post: the ingestion design, the idempotency approach and the real monthly AWS bi
 - [x] API Gateway JWT authorizer verifies control-plane tokens via JWKS (the stand-in issuer's, step 13)
 - [ ] `/v1/retrieve` runs the hybrid SQL under RLS; `/v1/query` adds rerank, abstain and citation validation
 - [ ] RLS tests and the leak matrix pass in CI, with the canary results in the README
-- [ ] Golden-set eval runs and stores the first baseline; comparison with ClinRAG written up
+- [ ] Golden-set eval runs and stores the first baseline; comparison with ClinRAG's published numbers written up
 
 Post: the leak matrix and what pgvector + RLS changed versus the Qdrant pipeline.
 

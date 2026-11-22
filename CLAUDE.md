@@ -63,6 +63,10 @@ uv run python db/bootstrap.py         # once per dev branch: roles, schema grant
 uv run alembic upgrade head           # migrations (uses DATABASE_URL_OWNER)
 PYTHONPATH=services uv run python -m worker.local <pdf> --tenant <uuid> --doc <uuid> --version 1  # one local ingest (real Bedrock)
 PYTHONPATH=services uv run python scripts/issuer.py mint --tenant <uuid> --role-level 2 --scope documents:read --scope documents:write --scope retrieve --scope query  # a 15-minute access token
+uv run python scripts/eval_corpus.py fetch      # eval corpus PDFs into eval/corpus/ (hash-checked)
+PYTHONPATH=services uv run python scripts/eval_corpus.py load   # index it on the Neon eval branch (real Titan)
+PYTHONPATH=services uv run python scripts/eval_golden.py generate   # regenerate the golden set (Mistral, paid)
+uv run pytest -m corpus                # golden quotes vs the downloaded corpus (slow)
 terraform -chdir=infra/envs/prod fmt -recursive && terraform -chdir=infra/envs/prod validate
 ```
 
@@ -83,6 +87,9 @@ LLM_SECONDARY_MODEL_ID=us.amazon.nova-2-lite-v1:0
 RAW_BUCKET=
 HONEYCOMB_API_KEY=      # optional, local traces only; Lambda reads its key from SSM
 COHERE_API_KEY=         # optional locally (without it: no reranking, degraded); Lambda reads SSM
+EVAL_DATABASE_URL_INGEST=   # app_ingest on the Neon eval branch (scripts/eval_corpus.py load)
+EVAL_DATABASE_URL_API=      # app_api on the eval branch (leak matrix, step 17)
+NEON_EVAL_ENDPOINT_ID=      # the eval branch's endpoint; load refuses any other
 JWT_ISSUER=             # token issuer URL (terraform output issuer_url): issuer.py mint signs for it, api.local verifies against it
 ```
 
@@ -141,7 +148,7 @@ Same rules as Slice 1. The token issuer comes first because everything after it 
   *Done when:* DB tests with fixed embeddings show RRF ordering, only live versions, and nothing from another tenant or above the caller's role level. Unit tests cover the lexical-weight rule.
 - [ ] **15. `/v1/query`.** Rerank (also as an option on `/v1/retrieve`, off for the leak matrix, with a `rerank` span), the abstain gate, the prompt with `<document>` tags, structured JSON from the LLM, citation validation and the SPEC response schema. Spans for `abstain_gate`, `llm_generate` and `citation_check`. Settle first: the primary and secondary LLM, the Cohere key's terms and cost (Open decision #7), and the starting abstain threshold. Timeouts, fallbacks and the cache are Slice 3.
   *Done when:* unit tests with fakes cover each citation rule, the abstain path and malformed LLM output, and one opt-in `paid` test answers a question from a real document.
-- [ ] **16. Eval corpus and personas.** In `eval/golden/`: ClinRAG's FDA/ICH corpus and 294-question golden set, a small synthetic corpus for a second tenant, canary documents per tenant and role level, the prompt-injection document and the 6 personas. A script loads it all through the real ingest path. Settle first: where the ClinRAG files come from, and which Neon branch holds the corpus.
+- [ ] **16. Eval corpus and personas.** In `eval/golden/`: an FDA/ICH corpus and golden set, rebuilt because ClinRAG's no longer exist (12 FDA guidances; 150 answerable and 30 unanswerable questions; DECISIONS 2026-11-22, "Step 16"), a small synthetic corpus for a second tenant, canary documents per tenant and role level, the prompt-injection document and the 6 personas. A script loads it all through the real ingest path onto the Neon `eval` branch.
   *Done when:* the corpus is indexed on that branch and the golden set files are committed.
 - [ ] **17. Leak matrix in CI.** Every golden question as every persona through `/v1/retrieve` with reranking off, plus the extraction questions. The canary check and the structural check; a leak count above 0 fails the build. A sampled `/v1/query` subset runs opt-in. The canary results go in the README. Settle first: CI has no Bedrock access, so the question embeddings are computed once and committed as a fixture, and CI calls no paid API. Only the embeddings are precomputed: the matrix still runs the real SQL against real Postgres + pgvector with RLS enabled, connected as `app_api`.
   *Done when:* CI passes with 0 leaks, and a deliberately broken policy on a branch makes it fail.

@@ -1,0 +1,139 @@
+{
+  "description": "Tenant A's corpus: final FDA guidances (ICH E-series and FDA clinical-trial guidance), from FDA's guidance search feed. US government publications; the PDFs are downloaded by eval/fetch_corpus.py, not committed.",
+  "source": "https://www.fda.gov/files/api/datatables/static/search-for-guidance.json",
+  "retrieved": "2026-11-22",
+  "documents": [
+    {
+      "external_id": "fda-ich-e6r3",
+      "title": "E6(R3) Good Clinical Practice (GCP)",
+      "issued": "2025-09-08",
+      "url": "https://www.fda.gov/media/169090/download",
+      "filename": "fda-ich-e6r3.pdf",
+      "sha256": "e57e9fc0134abebec409d7144aed6e3047c0939d1bd758163fea4e1169472109",
+      "size_bytes": 783562,
+      "pages": 86,
+      "min_role_level": 1
+    },
+    {
+      "external_id": "fda-ich-e8r1",
+      "title": "E8(R1) General Considerations for Clinical Studies",
+      "issued": "2022-04-08",
+      "url": "https://www.fda.gov/media/157560/download",
+      "filename": "fda-ich-e8r1.pdf",
+      "sha256": "3e22ed745c24360d73f55849a833e27c5b3c0a4885ccd19c22f0d75937db4baf",
+      "size_bytes": 385731,
+      "pages": 31,
+      "min_role_level": 1
+    },
+    {
+      "external_id": "fda-ich-e9",
+      "title": "E9 Statistical Principles for Clinical Trials",
+      "issued": "1998-09-16",
+      "url": "https://www.fda.gov/media/71336/download",
+      "filename": "fda-ich-e9.pdf",
+      "sha256": "f64a79a9800d523e50ac3c33af6fbd5de0c229b984e51b224bd5d58c26b12325",
+      "size_bytes": 112494,
+      "pages": 46,
+      "min_role_level": 1
+    },
+    {
+      "external_id": "fda-ich-e9r1",
+      "title": "E9(R1) Statistical Principles for Clinical Trials: Addendum: Estimands and Sensitivity Analysis",
+      "issued": "2021-05-11",
+      "url": "https://www.fda.gov/media/148473/download",
+      "filename": "fda-ich-e9r1.pdf",
+      "sha256": "5b274cf44361195fe95295598ad046e7a072d90da5309a8cb3cdb0b44bbff688",
+      "size_bytes": 241290,
+      "pages": 23,
+      "min_role_level": 1
+    },
+    {
+      "external_id": "fda-ich-e2a",
+      "title": "E2A Clinical Safety Data Management: Definitions and Standards for Expedited Reporting",
+      "issued": "1995-03-01",
+      "url": "https://www.fda.gov/media/71188/download",
+      "filename": "fda-ich-e2a.pdf",
+      "sha256": "2242c6e208d5ea53f64e219dbb2b4b7b1bad1f82494b94013db15a75f97e072d",
+      "size_bytes": 274561,
+      "pages": 17,
+      "min_role_level": 1
+    },
+    {
+      "external_id": "fda-ich-e3",
+      "title": "E3 Structure and Content of Clinical Study Reports",
+      "issued": "1996-07-01",
+      "url": "https://www.fda.gov/media/71271/download",
+      "filename": "fda-ich-e3.pdf",
+      "sha256": "4f18dd67d943a2df0daaeb88cc35488c72dd16a2a2d0938c9d0923f1bd0ac83a",
+      "size_bytes": 245478,
+      "pages": 55,
+      "min_role_level": 1
+    },
+    {
+      "external_id": "fda-ich-e10",
+      "title": "E10 Choice of Control Group and Related Issues in Clinical Trials",
+      "issued": "2001-05-14",
+      "url": "https://www.fda.gov/media/71349/download",
+      "filename": "fda-ich-e10.pdf",
+      "sha256": "43fa5804f3efd35ce831325222d989e9eb901f4092331ed7899a7744d16bbe74",
+      "size_bytes": 95456,
+      "pages": 37,
+      "min_role_level": 1
+    },
+    {
+      "external_id": "fda-ich-e17",
+      "title": "E17 General Principles for Planning and Design of Multi-Regional Clinical Trials",
+      "issued": "2018-07-19",
+      "url": "https://www.fda.gov/media/99974/download",
+      "filename": "fda-ich-e17.pdf",
+      "sha256": "b26ba84cbeffd324737c96691c62c7ab0a86dc6817ec0200152f6dca5cd40c66",
+      "size_bytes": 413243,
+      "pages": 24,
+      "min_role_level": 1
+    },
+    {
+      "external_id": "fda-rbm-2013",
+      "title": "Oversight of Clinical Investigations — A Risk-Based Approach to Monitoring",
+      "issued": "2013-08-07",
+      "url": "https://www.fda.gov/media/116754/download",
+      "filename": "fda-rbm-2013.pdf",
+      "sha256": "76556b1dcf148a1929f110bb1bfdf17d554630b665d23ad2b885473c5e8f2561",
+      "size_bytes": 391952,
+      "pages": 22,
+      "min_role_level": 1
+    },
+    {
+      "external_id": "fda-rbm-qa-2023",
+      "title": "A Risk-Based Approach to Monitoring of Clinical Investigations: Questions and Answers",
+      "issued": "2023-04-12",
+      "url": "https://www.fda.gov/media/121479/download",
+      "filename": "fda-rbm-qa-2023.pdf",
+      "sha256": "2c0d04faa13f3cfd95bb3b4c5359f699ede4f48dcb055ad2d0ae89d3aa9c423c",
+      "size_bytes": 272087,
+      "pages": 13,
+      "min_role_level": 1
+    },
+    {
+      "external_id": "fda-informed-consent-2023",
+      "title": "Informed Consent: Guidance for IRBs, Clinical Investigators, and Sponsors",
+      "issued": "2023-08-15",
+      "url": "https://www.fda.gov/media/88915/download",
+      "filename": "fda-informed-consent-2023.pdf",
+      "sha256": "96b26b2edb06e20ee2872ca59f4ec7c04cde8a8b1adf98bc150764e3d52f906a",
+      "size_bytes": 765283,
+      "pages": 66,
+      "min_role_level": 1
+    },
+    {
+      "external_id": "fda-electronic-systems-qa-2024",
+      "title": "Electronic Systems, Electronic Records, and Electronic Signatures in Clinical Investigations: Questions and Answers",
+      "issued": "2024-10-01",
+      "url": "https://www.fda.gov/media/166215/download",
+      "filename": "fda-electronic-systems-qa-2024.pdf",
+      "sha256": "f74ce1b061edfa634aaf0a0b07a472995a6d215f310a562e17ae46c0b67b47a6",
+      "size_bytes": 558773,
+      "pages": 28,
+      "min_role_level": 1
+    }
+  ]
+}

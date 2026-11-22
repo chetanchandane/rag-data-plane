@@ -1,0 +1,50 @@
+{
+  "tenants": {
+    "A": {
+      "tenant_id": "0e7a1000-0000-4000-8000-00000000000a",
+      "name": "Tenant A: FDA/ICH clinical-trial guidance (public)"
+    },
+    "B": {
+      "tenant_id": "0e7a1000-0000-4000-8000-00000000000b",
+      "name": "Tenant B: Northbeam Clinical Research SOPs (fictional)"
+    }
+  },
+  "personas": [
+    {
+      "persona": "a-r1",
+      "tenant": "A",
+      "tenant_id": "0e7a1000-0000-4000-8000-00000000000a",
+      "role_level": 1
+    },
+    {
+      "persona": "a-r2",
+      "tenant": "A",
+      "tenant_id": "0e7a1000-0000-4000-8000-00000000000a",
+      "role_level": 2
+    },
+    {
+      "persona": "a-r3",
+      "tenant": "A",
+      "tenant_id": "0e7a1000-0000-4000-8000-00000000000a",
+      "role_level": 3
+    },
+    {
+      "persona": "b-r1",
+      "tenant": "B",
+      "tenant_id": "0e7a1000-0000-4000-8000-00000000000b",
+      "role_level": 1
+    },
+    {
+      "persona": "b-r2",
+      "tenant": "B",
+      "tenant_id": "0e7a1000-0000-4000-8000-00000000000b",
+      "role_level": 2
+    },
+    {
+      "persona": "b-r3",
+      "tenant": "B",
+      "tenant_id": "0e7a1000-0000-4000-8000-00000000000b",
+      "role_level": 3
+    }
+  ]
+}

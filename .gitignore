@@ -31,3 +31,6 @@ crash.log
 
 # Sample PDFs are downloaded, not committed (see samples/README.md)
 samples/*.pdf
+
+# The eval corpus is downloaded or rendered, not committed (scripts/eval_corpus.py)
+eval/corpus/

@@ -45,8 +45,10 @@ async def register(
     s3_key: str,
     title: str,
     min_role_level: int,
+    external_id: str | None = None,
 ) -> None:
-    """Create the document and version rows if missing (stand-in for POST /v1/documents)."""
+    """Create the document and version rows if missing (stand-in for POST /v1/documents).
+    external_id defaults to local:<doc_id>."""
     async with rls_transaction(conn, tenant_id, None):
         await conn.execute(
             """
@@ -56,7 +58,7 @@ async def register(
             """,
             doc_id,
             tenant_id,
-            f"local:{doc_id}",
+            external_id or f"local:{doc_id}",
             title,
             min_role_level,
         )
