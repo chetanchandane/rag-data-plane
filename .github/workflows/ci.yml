@@ -118,9 +118,15 @@ jobs:
   # on a copy of the `eval` branch, which holds the indexed eval corpus. Any leak fails the
   # build, and production's migrations and the deploy wait for this job. No paid API: the
   # query embeddings are committed (eval/golden/question_embeddings.json).
+  #
+  # After db, not beside it: two branch creations at once failed with a 400 from Neon (the
+  # free plan's 10-branch cap, or one operation per project at a time), and by now db has
+  # deleted its branch. It runs even when db failed, so a broken policy fails both jobs.
   leak:
-    needs: lint-and-unit
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: [lint-and-unit, db]
+    if: >-
+      !cancelled() && needs.lint-and-unit.result == 'success'
+      && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

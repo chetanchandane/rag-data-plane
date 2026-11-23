@@ -19,6 +19,7 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
 - **A positive control keeps "0 leaks" honest.** Every persona must see each canary it is allowed to see at least once, so a matrix that silently returns nothing fails.
 - **CI runs it on every push and same-repo pull request,** in a `leak` job.
   - **Setup:** the job copies the Neon `eval` branch (same roles and passwords as dev) and only upgrades the copy's migrations. A down-and-up round trip would wipe the corpus.
+  - **It runs after the `db` job, not beside it.** Two branch creations at once got a 400 from Neon (the free plan's 10-branch cap, or one operation per project at a time). It still runs when `db` failed, so a broken policy fails both.
   - **Blocking:** production migrations and the deploy wait for it, so a leak blocks the deploy too.
   - **Report:** the per-persona table goes to the job summary.
 - **The proof that it catches a leak is a throwaway pull request** (Chetan, 2026-11-22).
