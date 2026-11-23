@@ -2,6 +2,33 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-22: Step 17 leak matrix
+
+- **The question embeddings are a committed fixture** (Chetan, 2026-11-22), because CI has no Bedrock access.
+  - **What's in it:** all 190 questions (golden, unanswerable, extraction) embedded once with the API's model (Titan v2, 1024 dimensions) by `scripts/eval_embeddings.py`, in `eval/golden/question_embeddings.json`.
+  - **Format:** each vector is base64 of little-endian float32, next to the SHA-256 of its question text and the model id. That's about 1 MB, and float32 is what pgvector stores anyway, so nothing is lost.
+  - **Staleness:** a unit test fails when a question's text no longer matches its hash, so an edited question can't run on a stale vector. Rejected: plain JSON floats (about 3.5 MB, noisy diffs) and `.npy` (numpy as a new direct dependency just for this).
+- **Only the embeddings are precomputed.** The matrix runs the real `/v1/retrieve` code in-process against real Postgres + pgvector with RLS, connected as `app_api`.
+  - Tokens are minted with the tests' throwaway key and verified by the real `get_claims()`.
+  - Reranking is off and `top_k` is 30, the most any request can see.
+  - A request whose embedding failed (`degraded: ["embedding"]`) fails the run, so the vectors really are used.
+- **Ground truth comes from the committed manifests, not the database.** A returned chunk's `doc_id` is looked up among the uuid5 ids that `scripts/eval_corpus.py` derives from tenant and external id, and its tenant and `min_role_level` come from `corpus.json` and `synthetic.json`. So a broken policy can't vouch for its own rows.
+- **What counts as a leak** (any one fails the build):
+  - **Structural:** a chunk whose document is another tenant's, above the persona's role level, or not in the manifests at all.
+  - **Canary:** a `CANARY-…` string in a chunk's content that belongs to another tenant or a higher level, or isn't in the manifest.
+- **A positive control keeps "0 leaks" honest.** Every persona must see each canary it is allowed to see at least once, so a matrix that silently returns nothing fails.
+- **CI runs it on every push and same-repo pull request,** in a `leak` job.
+  - **Setup:** the job copies the Neon `eval` branch (same roles and passwords as dev) and only upgrades the copy's migrations. A down-and-up round trip would wipe the corpus.
+  - **Blocking:** production migrations and the deploy wait for it, so a leak blocks the deploy too.
+  - **Report:** the per-persona table goes to the job summary.
+- **The proof that it catches a leak is a throwaway pull request** (Chetan, 2026-11-22).
+  - **The broken migration** drops the role-level condition from both `chunks_api_read` and `documents_api`. Both, because the hybrid SQL joins chunks to documents: breaking only the chunks policy is caught by the documents policy in the join, so nothing would leak.
+  - **Handling:** Chetan pushes the branch, CI goes red, and the PR is closed unmerged.
+- **The sampled `/v1/query` run is opt-in and paid, never in CI** (Chetan, 2026-11-22).
+  - **Sample:** the 10 extraction questions plus 10 golden questions (seeded), as all 6 personas: 120 calls, about $0.35 (Cohere searches plus the LLMs).
+  - **Checks:** canaries in the answer and in the citation quotes, and the structural check on cited documents.
+  - **Vectors:** it uses the fixture embeddings, so it makes no Titan calls.
+
 ## 2026-11-22: Step 16 eval corpus and golden set
 
 - **The corpus and golden set are rebuilt, not reused** (Chetan, 2026-11-22). ClinRAG's documents and its 294 questions no longer exist: its repo (`chetanchandane/rag`) lists only where its PDFs came from, and its golden set lived in LangSmith.

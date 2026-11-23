@@ -8,6 +8,7 @@ calls AWS or the network.
 
 import functools
 import hashlib
+import os
 import time
 import uuid
 from typing import Any
@@ -20,6 +21,7 @@ from fastapi import FastAPI
 
 from api.app import create_app
 from api.config import Settings
+from api.rerank import cohere_api_key
 from api.token_verifier import TokenVerifier
 from api.uploads import make_s3_client
 from shared import tokens
@@ -47,6 +49,18 @@ def make_settings(**overrides: Any) -> Settings:
         "jwt_issuer": ISSUER,
     }
     return Settings(**(values | overrides))
+
+
+COHERE_KEY_PARAM = "/ragdp/prod/cohere_api_key"
+
+
+def cohere_key() -> str:
+    """For paid tests only: COHERE_API_KEY from .env, else the production key in SSM (needs
+    an `aws login` session)."""
+    if os.environ.get("COHERE_API_KEY"):
+        return cohere_api_key(os.environ)
+    ssm = boto3.client("ssm", region_name=REGION)
+    return cohere_api_key({"COHERE_API_KEY_PARAM": COHERE_KEY_PARAM}, ssm)
 
 
 def no_llm(*args: Any) -> Any:

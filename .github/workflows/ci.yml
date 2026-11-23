@@ -1,6 +1,6 @@
-# CI (steps 10c and 10d, DECISIONS 2026-11-20): lint and unit tests on every push and pull
-# request; DB tests on a throwaway Neon branch; on main, migrations on production, then the
-# deploy (deploy.yml).
+# CI (steps 10c, 10d and 17; DECISIONS 2026-11-20, 2026-11-22 "Step 17"): lint and unit
+# tests on every push and pull request; DB tests and the leak matrix, each on its own
+# throwaway Neon branch; on main, migrations on production, then the deploy (deploy.yml).
 #
 # Third-party actions are pinned by commit SHA (a tag can be moved), with the tag in a comment.
 # GitHub settings this needs (docs/runbooks/ci-setup.md):
@@ -114,8 +114,69 @@ jobs:
           api_key: ${{ secrets.NEON_API_KEY }}
           branch: ${{ steps.branch.outputs.branch_id }}
 
+  # The leak matrix (step 17): every eval question as every persona through /v1/retrieve,
+  # on a copy of the `eval` branch, which holds the indexed eval corpus. Any leak fails the
+  # build, and production's migrations and the deploy wait for this job. No paid API: the
+  # query embeddings are committed (eval/golden/question_embeddings.json).
+  leak:
+    needs: lint-and-unit
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --frozen
+
+      - name: Branch expiry
+        run: echo "EXPIRES_AT=$(date -u --date '+2 hours' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      # A copy of `eval` (a child of dev: same roles and passwords), so the corpus is there
+      # and a pull request's migration never touches the shared eval branch.
+      - name: Create a throwaway copy of the eval branch
+        id: branch
+        uses: neondatabase/create-branch-action@72ed4f69a12b6be9c16aebfad893f6a21e9aba8b # v6.4.0
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          parent_branch: eval
+          branch_name: leak-${{ github.run_id }}-${{ github.run_attempt }}
+          role: app_owner
+          database: neondb
+          expires_at: ${{ env.EXPIRES_AT }}
+
+      - name: Connection strings for the branch
+        env:
+          HOST: ${{ steps.branch.outputs.db_host }}
+          HOST_POOLED: ${{ steps.branch.outputs.db_host_pooled }}
+          OWNER_PW: ${{ steps.branch.outputs.password }}
+          API_PW: ${{ secrets.DEV_APP_API_PASSWORD }}
+        run: |
+          tls="sslmode=verify-full&sslrootcert=${CA_BUNDLE}"
+          {
+            echo "DATABASE_URL_OWNER=postgresql://app_owner:${OWNER_PW}@${HOST}/neondb?${tls}&channel_binding=require"
+            echo "EVAL_DATABASE_URL_API=postgresql://app_api:${API_PW}@${HOST_POOLED}/neondb?${tls}"
+          } >> "$GITHUB_ENV"
+
+      # Upgrade only: a downgrade would drop the corpus. This is how a pull request's new
+      # migration (a changed policy, say) gets tested against the matrix.
+      - name: Migrations
+        run: uv run alembic upgrade head
+
+      - name: Leak matrix (app_api, RLS on, reranking off)
+        run: uv run pytest -m leak
+
+      - name: Delete the branch
+        if: always() && steps.branch.outputs.branch_id != ''
+        uses: neondatabase/delete-branch-action@4468d825d5a88ef4012f1705a82f02ec3072f776 # v3.2.1
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch: ${{ steps.branch.outputs.branch_id }}
+
   migrate:
-    needs: [lint-and-unit, db]
+    needs: [lint-and-unit, db, leak]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # GitHub lets only main use the `prod` environment, and it's the only `sub` the role trusts.

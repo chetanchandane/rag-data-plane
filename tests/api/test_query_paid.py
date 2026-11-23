@@ -11,18 +11,16 @@ Cost: about 20 Titan embeddings, one Cohere search and one or two LLM calls, und
 
 import functools
 import hashlib
-import os
 import uuid
 from pathlib import Path
 
-import boto3
 import httpx
 import pytest
 
 from api.llm import generate, llm_client
-from api.rerank import CohereReranker, cohere_api_key
+from api.rerank import CohereReranker
 from shared.embedding import embed_batch, embed_text, make_bedrock_client, query_client
-from tests.api.apphelpers import MODEL_ID, REGION, build_app, client
+from tests.api.apphelpers import MODEL_ID, REGION, build_app, client, cohere_key
 from worker.local import register
 from worker.pipeline import ingest_version
 
@@ -30,14 +28,6 @@ from worker.pipeline import ingest_version
 pytestmark = pytest.mark.paid
 
 PDF = Path(__file__).parents[2] / "samples" / "NIST.SP.800-207-p1-20.pdf"
-COHERE_KEY_PARAM = "/ragdp/prod/cohere_api_key"
-
-
-def _cohere_key() -> str:
-    if os.environ.get("COHERE_API_KEY"):
-        return cohere_api_key(os.environ)
-    ssm = boto3.client("ssm", region_name=REGION)
-    return cohere_api_key({"COHERE_API_KEY_PARAM": COHERE_KEY_PARAM}, ssm)
 
 
 @pytest.fixture
@@ -76,7 +66,7 @@ async def test_a_real_question_gets_a_cited_answer(api_pool, nist_tenant):
 
     async with httpx.AsyncClient() as http, client(app) as c:
         model = app.state.settings.rerank_model_id
-        app.state.reranker = CohereReranker(http, _cohere_key(), model)
+        app.state.reranker = CohereReranker(http, cohere_key(), model)
         resp = await c.post("/v1/query", json={"query": "What does a policy enforcement point do?"})
     assert resp.status_code == 200, resp.text
     out = resp.json()

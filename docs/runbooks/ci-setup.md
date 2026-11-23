@@ -5,8 +5,8 @@
 | Name | Kind | Value | Used by |
 | --- | --- | --- | --- |
 | `NEON_PROJECT_ID` | variable | Neon console: project, Settings, General, Project ID | `db` job |
-| `NEON_API_KEY` | secret | Neon API key (below) | `db` job: create and delete its branch |
-| `DEV_APP_API_PASSWORD` | secret | `app_api`'s password on the `dev` branch (from `.env`) | `db` job |
+| `NEON_API_KEY` | secret | Neon API key (below) | `db` and `leak` jobs: create and delete their branches |
+| `DEV_APP_API_PASSWORD` | secret | `app_api`'s password on the `dev` branch (from `.env`) | `db` job; `leak` job (the `eval` branch, a child of `dev`, has the same passwords) |
 | `DEV_APP_INGEST_PASSWORD` | secret | `app_ingest`'s password on the `dev` branch (from `.env`) | `db` job |
 | `ALERT_EMAIL` | `prod` environment secret | The alarm and budget email | `deploy` job (`TF_VAR_alert_email`) |
 
