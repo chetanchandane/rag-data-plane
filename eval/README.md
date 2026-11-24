@@ -22,4 +22,6 @@ uv run pytest -m leak                                            # the leak matr
 PYTHONPATH=services uv run python scripts/eval_embeddings.py     # after editing any question
 ```
 
+**The `eval` branch** is a child of `dev` (same roles and passwords) and must have **no expiry**: Neon refuses to copy an expiring branch, so CI's `leak` job would fail, and an expired `eval` takes the corpus with it (DECISIONS 2026-11-24). To create it: Neon console, Branches, New branch, parent `dev`, name `eval`, and don't set an expiration (auto-delete). Then set `NEON_EVAL_ENDPOINT_ID` and the host in both `EVAL_DATABASE_URL_*` lines to its endpoint, and run `load`.
+
 `load` needs `EVAL_DATABASE_URL_INGEST`, `NEON_EVAL_ENDPOINT_ID`, `EMBEDDING_MODEL_ID`, `AWS_REGION` and an `aws login` session; it refuses any database but the `eval` branch and is safe to rerun. Regenerating the golden set (`scripts/eval_golden.py generate`, Mistral Large 3 on Bedrock, about $0.20) replaces the questions; review a sample afterwards.

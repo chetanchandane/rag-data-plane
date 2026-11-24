@@ -2,6 +2,17 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-24: The `eval` branch never expires
+
+- **What went wrong:** every CI `leak` job up to 2026-11-23 failed at branch creation with a bare 400 from Neon, before any test ran. So the leak matrix had never run in CI, and `main` was red, which held back production migrations and deploys.
+  - **Cause:** `eval` was created on 2026-11-22 with a 24-hour expiry. Neon refuses to create a child of an expiring branch ([docs](https://neon.com/docs/guides/branch-expiration)), and the leak job's copy is a child of `eval`. The `db` job's copies of `dev` worked because `dev` has no expiry.
+  - **Then `eval` expired** (deleted 2026-11-23 21:38Z, 24 hours after creation) and took the indexed corpus with it.
+  - **The first diagnosis was wrong.** Two branch creations at once or the 10-branch cap don't fit Neon's operations log: the project never had more than main, dev, eval and one CI branch, and the `db` job created its branch 6 s after the leak job's attempt failed. Leak-after-db stays for now; running the two in parallel again is a separate change, to be checked on its own.
+- **Fix** (Chetan, 2026-11-24): `eval` was recreated from `dev` with no expiry and the corpus reloaded (24 documents, 453 chunks, same as on 2026-11-22). The local leak matrix gave 0 leaks with every allowed canary seen.
+- **Guard:** the `leak` job first reads the `eval` branch from the Neon API and fails with a readable reason if it's missing or has an expiry. `eval/README.md` says how to create it.
+  - Rejected: a comment and this entry only (the next console recreation would fail the same opaque way); having CI create `eval` itself (it would need Titan, and CI has no Bedrock access); protecting `eval` (protected branches can't expire, but they're a paid-plan feature, and Neon gives a protected branch's children new role passwords, which would break the leak job's `app_api` login; [docs](https://neon.com/docs/guides/protected-branches)).
+- **`NEON_API_KEY` in local `.env` is optional,** for debugging CI and listing branches. Nothing in the code reads it. It should be a project-scoped key, because an account-wide one could delete production's branch.
+
 ## 2026-11-22: Step 17 leak matrix
 
 - **The question embeddings are a committed fixture** (Chetan, 2026-11-22), because CI has no Bedrock access.
@@ -19,7 +30,7 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
 - **A positive control keeps "0 leaks" honest.** Every persona must see each canary it is allowed to see at least once, so a matrix that silently returns nothing fails.
 - **CI runs it on every push and same-repo pull request,** in a `leak` job.
   - **Setup:** the job copies the Neon `eval` branch (same roles and passwords as dev) and only upgrades the copy's migrations. A down-and-up round trip would wipe the corpus.
-  - **It runs after the `db` job, not beside it.** Two branch creations at once got a 400 from Neon (the free plan's 10-branch cap, or one operation per project at a time). It still runs when `db` failed, so a broken policy fails both.
+  - **It runs after the `db` job, not beside it,** and still runs when `db` failed, so a broken policy fails both. The reason first given for the ordering (two branch creations at once) was wrong; see 2026-11-24, "The `eval` branch never expires".
   - **Blocking:** production migrations and the deploy wait for it, so a leak blocks the deploy too.
   - **Report:** the per-persona table goes to the job summary.
 - **The proof that it catches a leak is a throwaway pull request** (Chetan, 2026-11-22).

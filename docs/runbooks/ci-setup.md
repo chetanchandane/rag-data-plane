@@ -4,11 +4,13 @@
 
 | Name | Kind | Value | Used by |
 | --- | --- | --- | --- |
-| `NEON_PROJECT_ID` | variable | Neon console: project, Settings, General, Project ID | `db` job |
-| `NEON_API_KEY` | secret | Neon API key (below) | `db` and `leak` jobs: create and delete their branches |
+| `NEON_PROJECT_ID` | variable | Neon console: project, Settings, General, Project ID | `db` and `leak` jobs |
+| `NEON_API_KEY` | secret | Neon API key (below) | `db` and `leak` jobs: create and delete their branches; `leak` also checks the `eval` branch |
 | `DEV_APP_API_PASSWORD` | secret | `app_api`'s password on the `dev` branch (from `.env`) | `db` job; `leak` job (the `eval` branch, a child of `dev`, has the same passwords) |
 | `DEV_APP_INGEST_PASSWORD` | secret | `app_ingest`'s password on the `dev` branch (from `.env`) | `db` job |
 | `ALERT_EMAIL` | `prod` environment secret | The alarm and budget email | `deploy` job (`TF_VAR_alert_email`) |
+
+The `leak` job also needs a Neon branch named `eval`, a child of `dev` with **no expiry**, holding the indexed eval corpus. Neon refuses to copy an expiring branch, and the job's first step fails if `eval` is missing or expires (`eval/README.md`, DECISIONS 2026-11-24).
 
 The `db` job gets `app_owner`'s password from Neon's branch action, so it needs no secret. The production `migrate` job needs none either: it signs in to AWS with OIDC (`ragdp-github-migrate`) and reads the owner URL from SSM.
 
