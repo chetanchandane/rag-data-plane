@@ -598,7 +598,7 @@ Also in `tests/rls/`: the catalog test (above) and `test_rls_write_limits.py`, a
 | --- | --- |
 | Context recall, faithfulness, answer relevance | Fail if any drops more than 3 points versus the stored `main` baseline |
 | Abstain precision on unanswerable questions | Floor set from the first baseline run |
-| Citation validity rate | Fail below 98% |
+| Citation validity rate | Fail below 98% (temporarily 95%, set in `eval/gate.json`, until the Slice 3 fixes; DECISIONS 2026-11-24, "Step 18 baseline and temporary floors") |
 | Leak count | Fail above 0 |
 
 **Chaos tests**
@@ -661,7 +661,7 @@ Post: the ingestion design, the idempotency approach and the real monthly AWS bi
 - [x] API Gateway JWT authorizer verifies control-plane tokens via JWKS (the stand-in issuer's, step 13)
 - [x] `/v1/retrieve` runs the hybrid SQL under RLS; `/v1/query` adds rerank, abstain and citation validation
 - [x] RLS tests and the leak matrix pass in CI, with the canary results in the README
-- [ ] Golden-set eval runs and stores the first baseline; comparison with ClinRAG's published numbers written up
+- [x] Golden-set eval runs and stores the first baseline; comparison with ClinRAG's published numbers written up
 
 Post: the leak matrix and what pgvector + RLS changed versus the Qdrant pipeline.
 

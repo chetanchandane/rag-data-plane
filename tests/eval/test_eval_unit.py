@@ -369,3 +369,30 @@ def test_a_regression_hidden_by_the_retry_still_fails_the_gate():
     # End result unchanged, but the primary misquotes far more often.
     failures = metrics.gate_failures(summary(primary_citation_validity=0.80), baseline, {})
     assert len(failures) == 1 and "primary_citation_validity" in failures[0]
+
+
+def test_gate_json_can_set_a_temporary_citation_floor():
+    floors = {"citation_validity_floor": 0.95}
+    assert metrics.gate_failures(summary(citation_validity=0.95), None, floors) == []
+    # Two decimals: 94.96% must not print as "95.0% is below 95%".
+    failure = metrics.gate_failures(summary(citation_validity=0.9496), None, floors)[0]
+    assert "94.96% is below 95.00%" in failure
+
+
+def test_the_committed_gate_file_is_usable():
+    """Free checks on eval/gate.json, so a bad edit shows up here, not in a paid run."""
+    import json
+
+    gate = json.loads((ROOT / "eval" / "gate.json").read_text())
+    assert set(gate) <= {"baseline", "abstain_precision_floor", "citation_validity_floor", "why"}
+    baseline_path = ROOT / gate["baseline"]
+    assert baseline_path.exists(), gate["baseline"]
+    assert "_dirty" not in baseline_path.name and "_sample" not in baseline_path.name
+    baseline = json.loads(baseline_path.read_text())
+    assert baseline["meta"]["dirty"] is False
+    # Every gated score has a value to compare with: an old run without one would
+    # silently switch that check off.
+    assert all(baseline["summary"].get(name) is not None for name in metrics.GATED_SCORES)
+    # A temporary floor, not an escape hatch: never below 90%, never above SPEC's 98%.
+    assert 0.90 <= gate.get("citation_validity_floor", 0.98) <= metrics.CITATION_VALIDITY_MIN
+    assert 0.5 <= gate["abstain_precision_floor"] <= 1.0

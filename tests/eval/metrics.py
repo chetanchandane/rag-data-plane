@@ -162,13 +162,16 @@ def gate_failures(summary: dict, baseline: dict | None, floors: dict) -> list[st
         failures.append(
             f"judge scored only {coverage:.1%} of answers (minimum {JUDGE_COVERAGE_MIN:.0%})"
         )
+    # SPEC's 98% unless gate.json sets a temporary floor (DECISIONS 2026-11-24, "Step 18").
+    validity_min = floors.get("citation_validity_floor", CITATION_VALIDITY_MIN)
     validity = summary["citation_validity"]
-    if validity is not None and validity < CITATION_VALIDITY_MIN:
-        failures.append(f"citation validity {validity:.1%} is below {CITATION_VALIDITY_MIN:.0%}")
+    if validity is not None and validity < validity_min:
+        failures.append(f"citation validity {validity:.2%} is below {validity_min:.2%}")
     floor = floors.get("abstain_precision_floor")
     precision = summary["abstain_precision"]
     if floor is not None and (precision is None or precision < floor):
-        failures.append(f"abstain precision {precision} is below its floor {floor}")
+        shown = "n/a" if precision is None else f"{precision:.2%}"
+        failures.append(f"abstain precision {shown} is below its floor {floor:.2%}")
     if baseline is not None:
         for name in GATED_SCORES:
             now, then = summary.get(name), baseline.get(name)

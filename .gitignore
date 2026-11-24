@@ -36,5 +36,5 @@ samples/*.pdf
 eval/corpus/
 
 # Eval runs that are never a baseline: smoke samples and uncommitted code (step 18).
-eval/results/*_sample.json
+eval/results/*_sample*.json
 eval/results/*_dirty*.json

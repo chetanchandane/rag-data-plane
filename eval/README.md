@@ -35,3 +35,51 @@ uv run pytest -m eval -s                                         # the eval run 
 **The `eval` branch** is a child of `dev` (same roles and passwords) and must have **no expiry**: Neon refuses to copy an expiring branch, so CI's `leak` job would fail, and an expired `eval` takes the corpus with it (DECISIONS 2026-11-24). To create it: Neon console, Branches, New branch, parent `dev`, name `eval`, and don't set an expiration (auto-delete). Then set `NEON_EVAL_ENDPOINT_ID` and the host in both `EVAL_DATABASE_URL_*` lines to its endpoint, and run `load`.
 
 `load` needs `EVAL_DATABASE_URL_INGEST`, `NEON_EVAL_ENDPOINT_ID`, `EMBEDDING_MODEL_ID`, `AWS_REGION` and an `aws login` session; it refuses any database but the `eval` branch and is safe to rerun. Regenerating the golden set (`scripts/eval_golden.py generate`, Mistral Large 3 on Bedrock, about $0.20) replaces the questions; review a sample afterwards.
+
+## Baseline (2026-11-24)
+
+`results/2026-11-24_94a08e6ee5e1.json`, the baseline in `gate.json`. Run from a laptop with the code at `94a08e6`. Answers come from Nova 2 Lite, with Qwen3 235B as the backup; the judge is DeepSeek V3.2; answer prompt `2026-11-24.1`.
+
+| Metric | Value | Gate |
+| --- | ---: | --- |
+| Context recall (the golden quote is in the 5 chunks the model saw) | 99.3% | drop > 3 points fails |
+| Recall@30 | 99.3% | reported |
+| Faithfulness (judge) | 99.5% | drop > 3 points fails |
+| Answer relevance (judge) | 96.9% | drop > 3 points fails |
+| Primary's citation validity (before the retry) | 90.7% | drop > 3 points fails |
+| Citation validity (what users get) | 96.7% | below 95% fails (temporary; SPEC's target is 98%) |
+| Answered rate (answerable questions) | 96.7% | reported |
+| Abstain precision | 85.7% | below 80% fails |
+| Abstain recall (30 unanswerable questions) | 100% | reported |
+| End to end p50 / p95 | 2.5 s / 10.4 s | reported (laptop, in-process; p95 includes the backup model on retries) |
+| LLM cost per 1,000 queries | $2.09 | reported (Cohere rerank, one search per query, not included) |
+
+**Latency by stage** (ms; laptop, in-process, Neon's pooled endpoint over the internet):
+
+| Stage | p50 | p95 | Note |
+| --- | ---: | ---: | --- |
+| query (end to end) | 2,469 | 10,368 | |
+| embed | 0.4 | 1.0 | the fixture, not Titan: production adds a Titan call, not measured here |
+| sql_recall | 349 | 775 | |
+| rerank (Cohere) | 355 | 518 | |
+| abstain_gate | 0.06 | 0.08 | |
+| llm_generate | 1,881 | 9,454 | both calls on the 14 citation retries |
+| citation_check | 0.7 | 1.9 | |
+
+**Warm or cold:** the run's first queries woke the `eval` branch's Neon compute (it scales to zero), so the p95 of `sql_recall` includes that cold start. Everything after it was warm. Lambda and API Gateway hops aren't in these numbers.
+
+**How it got here.** Two earlier full runs are kept next to it. Run 1 (`fb3a82c`) had 89.9% citation validity and 2 timeouts. Run 2 (`11be342`) used the short-quote prompt and had 90.7%, with no timeouts. Run 3 added the citation retry. What changed each time and why: DECISIONS 2026-11-24, "Citation failure fails over".
+
+### Next to ClinRAG (not like for like)
+
+ClinRAG is the earlier Qdrant pipeline. These are its published numbers. Its corpus and its 294 questions no longer exist (DECISIONS 2026-11-22, "Step 16"), so this compares two systems on **different documents, different questions and different judges** (ClinRAG used RAGAS; this uses hand-written DeepSeek prompts). Read it as "the same kind of measurement, both healthy", not as a controlled A/B.
+
+| | ClinRAG (Qdrant, 294 questions) | This system (pgvector + RLS, 180 questions) |
+| --- | ---: | ---: |
+| Faithfulness | 0.79 | 0.995 |
+| Answer relevance | 0.75 | 0.969 |
+| Context recall | 0.89 | 0.993 (a verbatim golden quote in the model's context: stricter than RAGAS' judged recall) |
+| Context precision | 0.80 | not measured |
+| Median latency | 15.2 s | 2.5 s (laptop, in-process, fixture embedding: no Titan, Lambda or API Gateway; how ClinRAG measured its 15.2 s isn't recorded) |
+| Unanswerable questions refused | not measured | 30 of 30 |
+| Citations checked against the source text | no | yes: a quote that isn't verbatim never reaches the user |

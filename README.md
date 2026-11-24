@@ -23,3 +23,16 @@ Latest run (2026-11-24, on the recreated `eval` branch; the same matrix passes i
 | b-r3 | 1520 | 8 | CANARY-TB-R1-a0d6a4, CANARY-TB-R2-2d4814, CANARY-TB-R3-c59343 | none | 0 |
 
 **1,140 requests, 0 leaks.** Tenant B returns fewer chunks because its corpus is small: five one-page SOPs plus its canaries.
+
+## Eval baseline
+
+150 answerable and 30 unanswerable questions through `/v1/query`, scored by an LLM judge from a different model family than the ones that answer (`tests/eval/`, `eval/README.md`):
+
+| Context recall | Faithfulness | Answer relevance | Citation validity | Unanswerable refused | p50 / p95* | LLM cost per 1,000 queries |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 99.3% | 99.5% | 96.9% | 96.7% | 30 / 30 | 2.5 s / 10.4 s | $2.09 |
+
+\*Measured in-process on a laptop, with the query embedding from a committed fixture: no Titan call, no Lambda or API Gateway. Cohere rerank (one call per query) is not in the cost.
+
+Every answer's quotes are checked against the source text: an answer that fails twice becomes an abstain, never an unverified answer. The quality gate (`tests/eval/`; `eval.yml` once its AWS role is applied) fails a run if context recall, faithfulness, answer relevance or the primary model's own citation validity drops more than 3 points from this baseline, or if citation validity falls below 95% (temporary; SPEC's target is 98%) or abstain precision below 80%. Latency, cost and refusals are reported, not gated. Side by side with the earlier Qdrant pipeline, ClinRAG (faithfulness 0.79, answer relevance 0.75, context recall 0.89, median 15.2 s), on different documents and questions: `eval/README.md`.
+

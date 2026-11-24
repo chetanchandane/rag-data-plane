@@ -2,6 +2,18 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-24: Step 18 baseline and temporary floors
+
+- **The baseline is run 3** (`eval/results/2026-11-24_94a08e6ee5e1.json`, code `94a08e6`): context recall 99.3%, faithfulness 99.5%, answer relevance 96.9%, citation validity 96.7% (the primary on its own: 90.7%), abstain precision 85.7%, abstain recall 100%, p50/p95 2.5 s / 10.4 s, $2.09 per 1,000 queries. Runs 1 and 2 are committed next to it as the "before" numbers. The write-up and the ClinRAG comparison (not like for like) are in `eval/README.md`.
+- **Temporary floors in `eval/gate.json`** (Chetan, 2026-11-24): **citation validity at least 95%** (SPEC: 98%) and **abstain precision at least 80%.**
+  - **Why 95%, not the 96% first proposed:** each citation failure is about 0.7 points. The baseline had 5 failures, a 96% floor allows 6 and a 95% floor allows 7, and run-to-run noise is about ±2 failures. So a floor just one failure above the baseline would fail an unchanged system often, by chance, and each failed run costs about $1. The abstain floor allows about the same 7 failures.
+  - **Rejected:** finishing step 18 only after reaching 98% (it needs the backup-latency fix, below), and keeping SPEC's 98% (every run would fail).
+- **Slice 3 starts with these** (the 98% target is still the goal):
+  - **The backup model's latency.** 3 of 14 citation retries timed out on Qwen at 10 s. Without them validity would have been about 98.7%. Candidates: probe GLM 4.7, Kimi K2.5 and GLM 4.7 Flash for speed and quote accuracy (about $0.05), or split the 20 s between the two models differently. On Bedrock prices (us-east-2): Qwen3 235B $0.22 / $0.88, GLM 4.7 $0.60 / $2.20, Kimi K2.5 $0.60 / $3.00, GLM 4.7 Flash $0.07 / $0.40 per million tokens. The backup answers about 8% of questions, so its price adds at most about $0.20 per 1,000 queries.
+  - **Footnotes extracted mid-sentence by the parser** ("Citation failure fails over", finding).
+  - **If quotes still miss 98%:** the model cites sentence numbers and the server copies the text.
+- **`eval.yml` in CI still needs Chetan:** apply `infra/bootstrap` (the `ragdp-github-eval` role) and create the `eval` GitHub environment. Until then the gate runs from the laptop (`uv run pytest -m eval -s`).
+
 ## 2026-11-24: Citation failure fails over (and what the first eval runs found)
 
 - **Run 1** (`fb3a82c`, prompt `2026-11-22.1`) failed the gate.

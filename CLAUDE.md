@@ -157,7 +157,7 @@ Same rules as Slice 1. The token issuer comes first because everything after it 
   *Done when:* the corpus is indexed on that branch and the golden set files are committed.
 - [x] **17. Leak matrix in CI.** Every golden question as every persona through `/v1/retrieve` with reranking off, plus the extraction questions. The canary check and the structural check; a leak count above 0 fails the build. A sampled `/v1/query` subset runs opt-in. The canary results go in the README. Settle first: CI has no Bedrock access, so the question embeddings are computed once and committed as a fixture, and CI calls no paid API. Only the embeddings are precomputed: the matrix still runs the real SQL against real Postgres + pgvector with RLS enabled, connected as `app_api`.
   *Done when:* CI passes with 0 leaks, and a deliberately broken policy on a branch makes it fail.
-- [ ] **18. Eval baseline.** `eval.yml` and the metrics in SPEC: Proof, "Quality gate". Results are saved to `eval/results/<date>_<git-sha>.json` (DECISIONS 2026-11-16, "Planned experiment"). Settle first: the judge model for faithfulness and relevance, and its cost per run.
+- [x] **18. Eval baseline.** `eval.yml` and the metrics in SPEC: Proof, "Quality gate". Results are saved to `eval/results/<date>_<git-sha>.json` (DECISIONS 2026-11-16, "Planned experiment"). Settle first: the judge model for faithfulness and relevance, and its cost per run.
   *Done when:* the first `main` baseline is committed and the ClinRAG comparison is written up.
 
 When step 18 is done, every Slice 2 box in SPEC: Slices is ticked (13 ticks the authorizer box, 14 and 15 the endpoints box, 17 the leak matrix box, 18 the eval box).
