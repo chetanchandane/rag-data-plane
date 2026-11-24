@@ -119,9 +119,9 @@ jobs:
   # build, and production's migrations and the deploy wait for this job. No paid API: the
   # query embeddings are committed (eval/golden/question_embeddings.json).
   #
-  # After db, not beside it: two branch creations at once failed with a 400 from Neon (the
-  # free plan's 10-branch cap, or one operation per project at a time), and by now db has
-  # deleted its branch. It runs even when db failed, so a broken policy fails both jobs.
+  # It runs after db, and even when db failed, so a broken policy fails both jobs. The
+  # ordering was added for a misdiagnosed 400 (DECISIONS 2026-11-24); running the two in
+  # parallel again is a separate change, to be checked on its own.
   leak:
     needs: [lint-and-unit, db]
     if: >-
@@ -137,6 +137,27 @@ jobs:
 
       - name: Branch expiry
         run: echo "EXPIRES_AT=$(date -u --date '+2 hours' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      # Neon refuses to copy a branch that has an expiry, and the branch action reports only
+      # "400" (DECISIONS 2026-11-24). Check first, so the failure says what to fix.
+      - name: Check the eval branch exists and never expires
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+        run: |
+          branches=$(curl -sSf -H "Authorization: Bearer ${NEON_API_KEY}" \
+            "https://console.neon.tech/api/v2/projects/${PROJECT_ID}/branches") \
+            || { echo "::error::Neon API request failed (key or project id?)"; exit 1; }
+          branch=$(jq -c '.branches[] | select(.name == "eval")' <<<"$branches")
+          if [ -z "$branch" ]; then
+            echo "::error::No 'eval' branch. Create it from dev with no expiry, then reload the corpus (eval/README.md)."
+            exit 1
+          fi
+          if [ -n "$(jq -r '.expires_at // empty' <<<"$branch")" ]; then
+            echo "::error::The 'eval' branch has an expiry, so Neon refuses to copy it. Remove the expiry in the Neon console (eval/README.md)."
+            exit 1
+          fi
+          echo "eval branch $(jq -r .id <<<"$branch") has no expiry"
 
       # A copy of `eval` (a child of dev: same roles and passwords), so the corpus is there
       # and a pull request's migration never touches the shared eval branch.

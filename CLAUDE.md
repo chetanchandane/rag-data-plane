@@ -78,6 +78,7 @@ terraform -chdir=infra/envs/prod fmt -recursive && terraform -chdir=infra/envs/p
 ```bash
 NEON_ADMIN_URL=         # Neon default owner, dev branch direct endpoint; db/bootstrap.py only
 NEON_DEV_ENDPOINT_ID=   # e.g. ep-sparkling-heart-bdl5i7aa; bootstrap refuses any other endpoint
+NEON_API_KEY=           # optional, project-scoped: Neon API for debugging CI; no code reads it
 DATABASE_URL_OWNER=     # migrations only
 DATABASE_URL_API=       # app_api role, pooled endpoint
 DATABASE_URL_INGEST=    # app_ingest role, pooled endpoint
