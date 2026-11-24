@@ -56,6 +56,14 @@ gh secret list --repo $R --env prod
 
 Apply `infra/bootstrap` (it adds `ragdp-github-migrate`: 1 role, 1 inline policy). It trusts the same `prod` environment as the deploy role.
 
+## 4b. The eval workflow (step 18)
+
+`.github/workflows/eval.yml` runs only when started by hand (Actions, Eval, Run workflow), about $1 a run.
+
+1. **Apply `infra/bootstrap`:** it adds `ragdp-github-eval` (1 role, 1 inline policy). It can call only the answering models (Nova 2 Lite through its profile, Qwen3 235B) and the judge (DeepSeek V3.2), and read `/ragdp/prod/cohere_api_key`. It trusts only the `eval` environment.
+2. **Create the `eval` environment** (Settings, Environments), with no deployment branch restriction, so any branch can be measured against `main`'s baseline. Or: `gh api -X PUT repos/$R/environments/eval`.
+3. **No new secrets.** It uses the leak job's `NEON_API_KEY`, `DEV_APP_API_PASSWORD` and `NEON_PROJECT_ID`, and reads the Cohere key from SSM.
+
 ## 5. Check
 
 Push to `main`. In the Actions tab, `lint-and-unit`, then `db`, then `migrate`, then `deploy / deploy` should pass. `migrate`'s last step prints the production head (`0003 (head)`); `deploy`'s last step prints the worker's image, tagged with the pushed commit.

@@ -1,0 +1,108 @@
+# The quality gate (step 18; SPEC: Proof, "Quality gate"; DECISIONS 2026-11-24, "Step 18 eval
+# baseline"): the golden set through /v1/query on a copy of the Neon `eval` branch, judged by
+# DeepSeek V3.2, saved, and compared with main's baseline (eval/gate.json).
+#
+# Manual only (Actions tab, "Run workflow"; any branch): each run calls Bedrock and Cohere,
+# about $1. Never on push. GitHub settings it needs (docs/runbooks/ci-setup.md): the
+# environment `eval`, trusted by the ragdp-github-eval role (infra/bootstrap), plus the
+# secrets and variable the leak job uses (NEON_API_KEY, DEV_APP_API_PASSWORD, NEON_PROJECT_ID).
+
+name: Eval
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One paid run at a time; a second dispatch waits rather than doubling the spend.
+concurrency:
+  group: eval
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.11.29"
+  CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+
+jobs:
+  eval:
+    runs-on: ubuntu-24.04
+    environment: eval
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write # to sign in to AWS with OIDC; no stored AWS keys
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --frozen
+
+      - name: Branch expiry
+        run: echo "EXPIRES_AT=$(date -u --date '+2 hours' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      - name: Check the eval branch exists and never expires
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+        run: .github/scripts/check-eval-branch.sh
+
+      # A copy, as in the leak job: the branch's migrations are applied to it, so a branch's
+      # change is measured, and the shared eval branch is never written to.
+      - name: Create a throwaway copy of the eval branch
+        id: branch
+        uses: neondatabase/create-branch-action@72ed4f69a12b6be9c16aebfad893f6a21e9aba8b # v6.4.0
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          parent_branch: eval
+          branch_name: eval-${{ github.run_id }}-${{ github.run_attempt }}
+          role: app_owner
+          database: neondb
+          expires_at: ${{ env.EXPIRES_AT }}
+
+      - name: Connection strings for the branch
+        env:
+          HOST: ${{ steps.branch.outputs.db_host }}
+          HOST_POOLED: ${{ steps.branch.outputs.db_host_pooled }}
+          OWNER_PW: ${{ steps.branch.outputs.password }}
+          API_PW: ${{ secrets.DEV_APP_API_PASSWORD }}
+        run: |
+          tls="sslmode=verify-full&sslrootcert=${CA_BUNDLE}"
+          {
+            echo "DATABASE_URL_OWNER=postgresql://app_owner:${OWNER_PW}@${HOST}/neondb?${tls}&channel_binding=require"
+            echo "EVAL_DATABASE_URL_API=postgresql://app_api:${API_PW}@${HOST_POOLED}/neondb?${tls}"
+          } >> "$GITHUB_ENV"
+
+      - name: Migrations (upgrade only; a downgrade would drop the corpus)
+        run: uv run alembic upgrade head
+
+      # infra/bootstrap output eval_role_arn: it can call only the answering models and the
+      # judge, and read the Cohere key.
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::905418224080:role/ragdp-github-eval
+          role-session-name: eval-${{ github.run_id }}
+          aws-region: us-east-2
+
+      # The report goes to the job summary; the gate fails the job.
+      - name: Eval run and gate
+        run: uv run pytest -m eval -s
+
+      # Always, so a failing run's numbers can be read (and a new baseline committed).
+      - name: Results file
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eval-results
+          path: eval/results/*.json
+          if-no-files-found: ignore
+
+      - name: Delete the branch
+        if: always() && steps.branch.outputs.branch_id != ''
+        uses: neondatabase/delete-branch-action@4468d825d5a88ef4012f1705a82f02ec3072f776 # v3.2.1
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch: ${{ steps.branch.outputs.branch_id }}

@@ -543,6 +543,114 @@ resource "aws_iam_role_policy" "migrate" {
   policy = data.aws_iam_policy_document.migrate.json
 }
 
+# --- 3c. Eval role (step 18) ---------------------------------------------------------------
+
+# eval.yml's quality gate (DECISIONS 2026-11-24, "Step 18 eval baseline"): it calls the
+# answering models and the judge, and reads the Cohere key. Nothing else in AWS. It trusts
+# only the `eval` environment, which has no branch restriction, so a branch can be measured
+# against main's baseline; the workflow is manual-only, and only people with write access
+# can run it.
+locals {
+  # Keep in sync with infra/envs/prod/prod.tfvars (answering) and tests/eval/judge.py.
+  eval_profile_ids = ["us.amazon.nova-2-lite-v1:0"]                      # primary
+  eval_model_ids   = ["qwen.qwen3-235b-a22b-2507-v1:0", "deepseek.v3.2"] # secondary, judge
+  eval_profile_arns = [
+    for id in local.eval_profile_ids :
+    "arn:aws:bedrock:${local.region}:${local.account}:inference-profile/${id}"
+  ]
+  cohere_key_parameter_arn = "arn:aws:ssm:${local.region}:${local.account}:parameter/${local.p}/prod/cohere_api_key"
+}
+
+data "aws_iam_policy_document" "eval_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["${var.github_subject_prefix}:environment:eval"]
+    }
+  }
+}
+
+resource "aws_iam_role" "eval" {
+  name                 = "${local.p}-github-eval"
+  description          = "Assumed by GitHub Actions (${var.github_repo}, environment eval) to run the step 18 eval: the answering LLMs, the judge and the Cohere key."
+  assume_role_policy   = data.aws_iam_policy_document.eval_trust.json
+  max_session_duration = 3600
+}
+
+data "aws_iam_policy_document" "eval" {
+  # The primary through its US inference profile: the profile, and its model in each Region
+  # the profile may route to, only through that profile (as the API's own role).
+  statement {
+    sid       = "InvokeThroughProfiles"
+    actions   = ["bedrock:InvokeModel"]
+    resources = local.eval_profile_arns
+  }
+
+  statement {
+    sid     = "InvokeRoutedModels"
+    actions = ["bedrock:InvokeModel"]
+    resources = flatten([
+      for id in local.eval_profile_ids : [
+        for region in local.us_inference_regions :
+        "arn:aws:bedrock:${region}::foundation-model/${trimprefix(id, "us.")}"
+      ]
+    ])
+    condition {
+      test     = "StringLike"
+      variable = "bedrock:InferenceProfileArn"
+      values   = local.eval_profile_arns
+    }
+  }
+
+  # The secondary and the judge, called directly in this Region.
+  statement {
+    sid       = "InvokeModelsInRegion"
+    actions   = ["bedrock:InvokeModel"]
+    resources = [for id in local.eval_model_ids : "arn:aws:bedrock:${local.region}::foundation-model/${id}"]
+  }
+
+  statement {
+    sid       = "ReadCohereKey"
+    actions   = ["ssm:GetParameter"]
+    resources = [local.cohere_key_parameter_arn]
+  }
+
+  # A SecureString under the AWS-managed SSM key: decrypt only through SSM, and only for
+  # this one parameter (as the migrate role).
+  statement {
+    sid       = "DecryptCohereKeyViaSsm"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${local.region}.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:PARAMETER_ARN"
+      values   = [local.cohere_key_parameter_arn]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "eval" {
+  name   = "eval-models-and-cohere-key"
+  role   = aws_iam_role.eval.id
+  policy = data.aws_iam_policy_document.eval.json
+}
+
 # --- 4. Workload permissions boundary ------------------------------------------------------
 
 # The most any Lambda role made by the deploy role can ever do. Each role still gets its own,

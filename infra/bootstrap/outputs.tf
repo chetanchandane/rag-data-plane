@@ -22,3 +22,8 @@ output "migrate_role_arn" {
   description = "For the CI workflow's production migrate job."
   value       = aws_iam_role.migrate.arn
 }
+
+output "eval_role_arn" {
+  description = "For eval.yml (step 18): the answering LLMs, the judge and the Cohere key."
+  value       = aws_iam_role.eval.arn
+}

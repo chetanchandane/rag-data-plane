@@ -70,6 +70,7 @@ uv run pytest -m corpus                # golden quotes vs the downloaded corpus 
 uv run pytest -m leak                  # leak matrix on the Neon eval branch (EVAL_DATABASE_URL_API); free
 PYTHONPATH=services uv run python scripts/eval_embeddings.py   # re-embed the questions after editing any (Titan, < $0.001)
 uv run pytest -m paid tests/leak/test_query_leaks_paid.py -s  # sampled /v1/query leak check (about $0.35)
+uv run pytest -m eval -s               # step 18 eval run + quality gate (about $1; EVAL_LIMIT=3 for a cents smoke test)
 terraform -chdir=infra/envs/prod fmt -recursive && terraform -chdir=infra/envs/prod validate
 ```
 

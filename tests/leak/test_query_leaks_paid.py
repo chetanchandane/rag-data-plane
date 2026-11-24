@@ -27,7 +27,6 @@ from shared.db import create_pool
 from tests.api.apphelpers import REGION, build_app, client, cohere_key, mint
 from tests.dbutil import db_url
 from tests.leak import matrix
-from tests.leak.test_leak_matrix import fixture_embedder
 
 pytestmark = pytest.mark.paid
 
@@ -55,7 +54,7 @@ async def test_answers_never_carry_another_tenants_or_a_higher_levels_data():
     try:
         first = personas[0]
         app = build_app(pool, first.tenant_id, first.role_level)
-        app.state.embed_query = fixture_embedder()
+        app.state.embed_query = matrix.fixture_embedder()
         app.state.generate = functools.partial(generate, llm_client(REGION))
         async with httpx.AsyncClient() as http:
             model = app.state.settings.rerank_model_id

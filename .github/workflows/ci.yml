@@ -144,20 +144,7 @@ jobs:
         env:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
-        run: |
-          branches=$(curl -sSf -H "Authorization: Bearer ${NEON_API_KEY}" \
-            "https://console.neon.tech/api/v2/projects/${PROJECT_ID}/branches") \
-            || { echo "::error::Neon API request failed (key or project id?)"; exit 1; }
-          branch=$(jq -c '.branches[] | select(.name == "eval")' <<<"$branches")
-          if [ -z "$branch" ]; then
-            echo "::error::No 'eval' branch. Create it from dev with no expiry, then reload the corpus (eval/README.md)."
-            exit 1
-          fi
-          if [ -n "$(jq -r '.expires_at // empty' <<<"$branch")" ]; then
-            echo "::error::The 'eval' branch has an expiry, so Neon refuses to copy it. Remove the expiry in the Neon console (eval/README.md)."
-            exit 1
-          fi
-          echo "eval branch $(jq -r .id <<<"$branch") has no expiry"
+        run: .github/scripts/check-eval-branch.sh
 
       # A copy of `eval` (a child of dev: same roles and passwords), so the corpus is there
       # and a pull request's migration never touches the shared eval branch.

@@ -2,6 +2,37 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-24: Step 18 eval baseline
+
+- **Judge: DeepSeek V3.2** (`deepseek.v3.2`, in us-east-2; Chetan, 2026-11-24). It's from a different provider than both answering models (Amazon, Qwen) and the question writer (Mistral), so nothing grades its own output or phrasing. It passed the forced tool-call probe on this account, and it costs $0.62 / $1.85 per million tokens (Price List API, us-east-2). Temperature 0, for repeatable verdicts. Rejected: GLM 4.7 (about the same price, no advantage), Kimi K2.5 (pricier output); Anthropic and OpenAI models are refused for this account.
+- **Judge prompts are hand-written, not RAGAS** (Chetan, 2026-11-24). RAGAS brings in LangChain for two prompts, and its scores are harder to explain line by line. The cost is that the numbers aren't RAGAS-identical, but the ClinRAG comparison was already "not like for like" (Step 16).
+- **What each metric is.** Only two use the judge:
+  - **Context recall** (answerable questions): the stored verbatim quote, normalized as the citation check does, is inside one of the 5 chunks the model saw. **Recall@30** is the same check over the 30 recalled candidates, so a miss can be blamed on recall or on reranking. No judge.
+  - **Faithfulness** (answered questions): the judge splits the answer into claims and marks each one supported or not by those 5 chunks. Score = supported / claims.
+  - **Answer relevance** (answered questions): the judge says whether the answer addresses the question fully (1), partly (0.5) or not (0). It isn't graded against the reference answer.
+  - **Abstain precision and recall:** precision is how many of all abstentions (over the 150 answerable and 30 unanswerable questions) were on unanswerable questions; recall is how many of the 30 were abstained on. No judge.
+  - **Citation validity rate:** answers that passed the citation check / (those + `citation_check_failed` abstains). No judge.
+  - **Also reported:** the answered rate on answerable questions (a system that always abstains would score perfect faithfulness), abstain reasons, failovers, p50/p95 per stage and end to end, LLM and judge cost, Cohere searches.
+- **How the context is captured without changing the API:** the eval wraps the reranker and records the 30 candidates it receives and the order it returns. `/v1/query`'s response stays as SPEC defines it.
+- **The harness is an opt-in pytest (`-m eval`)**, like the leak matrix. It reuses the same app-in-process setup, fixture embeddings (no Titan) and RLS as `app_api` on the `eval` branch, as persona a-r1 (all FDA documents are level 1). The 10 extraction questions aren't part of it; they're leak tests.
+- **Results** go to `eval/results/<date>_<sha>.json`, with the git SHA, whether the tree was dirty, the golden set's hash, the models, both prompt versions and the settings. They're written before the gate runs, so a failing run still leaves its numbers.
+- **The gate** (`eval/gate.json` names the baseline file and the floors):
+  - Context recall, faithfulness or answer relevance more than 3 points below the baseline fails.
+  - Citation validity below 98% fails.
+  - Abstain precision below its floor fails. The floor is set from the first baseline.
+  - A run is invalid, and fails, if any request lost its reranker or embedding (that measures another system), or if the judge couldn't score more than 5% of answers.
+- **`eval.yml` runs only on manual dispatch** (about $1 a run), in a GitHub environment `eval` with no branch restriction, so a branch can be compared with `main`'s baseline. It copies the `eval` branch like the leak job does. A new OIDC role `ragdp-github-eval` (bootstrap, applied by Chetan) can only call Nova (through its profile), Qwen and DeepSeek, and read the Cohere key from SSM.
+- **The first baseline is run from the laptop on a clean `main` commit,** then committed with `eval/gate.json`.
+- **From the code review** (2026-11-24):
+  - **No single question can lose a paid run.** Request errors and judge errors are recorded per question, the results file is written, and then the gate fails on any request error, or on judge coverage under 95%.
+  - **`llm_unavailable` and `llm_output_invalid` invalidate a run.** They mean no model answered (an outage, or the eval role missing a model), not a decision to abstain. Counted as abstains, they'd inflate abstain precision and recall. A run where nothing was answered fails too.
+  - **The eval retries a failed rerank twice** and counts the retries. One slow Cohere reply would otherwise invalidate the run (degraded `reranker`). Production doesn't retry; how it degrades is Slice 3's chaos table.
+  - **A baseline must be comparable:** same golden set hash, persona, judge model and judge prompt version, or the gate fails. Answering models and prompts may differ, since measuring that is the point. Results files are never overwritten (`_2`, `_3`, …), so a rerun can't replace the baseline it's compared with.
+  - **The eval reads the answering models from `prod.tfvars`,** so it grades production's models, not test constants. The bootstrap eval role has to list them separately (bootstrap can't read prod's variables), so a unit test checks that list against `prod.tfvars` and the judge.
+  - **The test is marked `paid` as well as `eval`** (CLAUDE.md: every paid test is `paid`).
+  - **Accepted risk:** the eval role trusts any job in the `eval` environment, which has no branch restriction. So someone with write access could add a workflow that reads the production Cohere key. Today only Chetan has write access. If that changes, give the eval its own Cohere key, or require a reviewer on the environment.
+  - **Rejected:** a shared concurrency group with CI's Neon branch creation. It rested on the old "two creations at once" diagnosis, which was wrong (2026-11-24, "The `eval` branch never expires"); at most 6 branches exist at once. Also rejected: sharing the judge's tool parsing and tag escaping with `api/`, which would change production code for test needs (the tags and tools differ anyway).
+
 ## 2026-11-24: LLMs without Anthropic (Nova 2 Lite primary, Qwen3 235B secondary)
 
 - **Why:** Bedrock refuses Claude Haiku 5.5 for this account: `Converse` returns `AccessDeniedException: anthropic.claude-haiku-5-5 is not available for this account … contact AWS Sales`. It does this even though `get-foundation-model-availability` reports `AVAILABLE` / `AUTHORIZED`. It's an account-level block, not IAM (an IAM denial says "is not authorized to perform"), and only AWS can lift it. A support case has been open with no response. OpenAI models are refused the same way, and Meta's Llama 4 is "Legacy" for accounts that haven't used it in 30 days.

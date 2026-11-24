@@ -24,18 +24,6 @@ pytestmark = pytest.mark.leak
 PARALLEL_REQUESTS = 4  # the pool's size: enough to finish in a minute or two
 
 
-def fixture_embedder():
-    """embed_query for the app: the committed vector for each known question text. An
-    unknown text is a bug in the test, so it raises (and the route answers 500)."""
-    vectors = matrix.eval_embeddings.load()
-    by_text = {q["question"]: vectors[q["id"]] for q in matrix.questions()}
-
-    def embed(text: str) -> list[float]:
-        return by_text[text]
-
-    return embed
-
-
 async def run_matrix(app, personas, questions) -> list[matrix.PersonaResult]:
     docs, tokens = matrix.documents(), matrix.canaries()
     results = [matrix.PersonaResult(p) for p in personas]
@@ -69,7 +57,7 @@ async def test_no_persona_sees_another_tenants_or_a_higher_levels_data():
         # build_app's own token is unused: each persona gets its own below.
         first = personas[0]
         app = build_app(pool, first.tenant_id, first.role_level)
-        app.state.embed_query = fixture_embedder()
+        app.state.embed_query = matrix.fixture_embedder()
         results = await run_matrix(app, personas, questions)
     finally:
         await pool.close()

@@ -99,6 +99,18 @@ def questions() -> list[dict]:
     return eval_embeddings.all_questions()
 
 
+def fixture_embedder():
+    """embed_query for the app: the committed vector for each known question text. An
+    unknown text is a bug in the test, so it raises (and the route answers 500)."""
+    vectors = eval_embeddings.load()
+    by_text = {q["question"]: vectors[q["id"]] for q in questions()}
+
+    def embed(text: str) -> list[float]:
+        return by_text[text]
+
+    return embed
+
+
 # --- checks -------------------------------------------------------------------------------
 
 

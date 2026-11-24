@@ -34,3 +34,7 @@ samples/*.pdf
 
 # The eval corpus is downloaded or rendered, not committed (scripts/eval_corpus.py)
 eval/corpus/
+
+# Eval runs that are never a baseline: smoke samples and uncommitted code (step 18).
+eval/results/*_sample.json
+eval/results/*_dirty*.json

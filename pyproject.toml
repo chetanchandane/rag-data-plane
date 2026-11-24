@@ -46,12 +46,13 @@ testpaths = ["tests"]
 pythonpath = ["services"]
 # Plain `uv run pytest` runs unit tests only. A later `-m db` on the command line
 # overrides this, because pytest uses the last -m it sees.
-addopts = "-m 'not db and not paid and not corpus and not leak'"
+addopts = "-m 'not db and not paid and not corpus and not leak and not eval'"
 markers = [
     "db: needs the Neon dev branch (DATABASE_URL_* in .env)",
     "paid: calls a paid API (Bedrock, Cohere, LLM); opt-in only",
     "corpus: parses the downloaded eval corpus (scripts/eval_corpus.py fetch); slow, opt-in",
     "leak: the leak matrix on the Neon eval branch (EVAL_DATABASE_URL_API); calls no paid API",
+    "eval: the step 18 eval run (Bedrock, Cohere, the eval branch); paid, about $1",
 ]
 # async def tests run without needing @pytest.mark.asyncio on each one.
 asyncio_mode = "auto"
