@@ -85,8 +85,8 @@ DATABASE_URL_INGEST=    # app_ingest role, pooled endpoint
 AWS_REGION=us-east-2
 EMBEDDING_MODEL_ID=amazon.titan-embed-text-v2:0
 RERANK_MODEL_ID=rerank-v5.0-fast
-LLM_PRIMARY_MODEL_ID=us.anthropic.claude-haiku-5-5
-LLM_SECONDARY_MODEL_ID=us.amazon.nova-2-lite-v1:0
+LLM_PRIMARY_MODEL_ID=us.amazon.nova-2-lite-v1:0
+LLM_SECONDARY_MODEL_ID=qwen.qwen3-235b-a22b-2507-v1:0
 # LLM_PRIMARY_EFFORT=low  ABSTAIN_THRESHOLD=0.3  LLM_CONTEXT_CHUNKS=5   (defaults)
 RAW_BUCKET=
 HONEYCOMB_API_KEY=      # optional, local traces only; Lambda reads its key from SSM
@@ -150,7 +150,7 @@ Same rules as Slice 1. The token issuer comes first because everything after it 
   *Done when:* `GET /v1/whoami` through the deployed API returns the minted token's `tenant_id` and `role_level`, a minted token registers a document, and a missing, expired or wrong-audience token gets a 401 from API Gateway without invoking the Lambda.
 - [x] **14. `/v1/retrieve`.** The query embedding (Titan), the hybrid RRF SQL from SPEC under `rls_transaction`, and the lexical-weight rule. If the embedding fails, lexical-only recall with `degraded: ["embedding"]`. Spans for `embed` and `sql_recall`. Reranking moved to step 15 (DECISIONS 2026-11-21, "Step 14").
   *Done when:* DB tests with fixed embeddings show RRF ordering, only live versions, and nothing from another tenant or above the caller's role level. Unit tests cover the lexical-weight rule.
-- [ ] **15. `/v1/query`.** Rerank (also as an option on `/v1/retrieve`, off for the leak matrix, with a `rerank` span), the abstain gate, the prompt with `<document>` tags, structured JSON from the LLM, citation validation and the SPEC response schema. Spans for `abstain_gate`, `llm_generate` and `citation_check`. Settle first: the primary and secondary LLM, the Cohere key's terms and cost (Open decision #7), and the starting abstain threshold. Timeouts, fallbacks and the cache are Slice 3.
+- [x] **15. `/v1/query`.** Rerank (also as an option on `/v1/retrieve`, off for the leak matrix, with a `rerank` span), the abstain gate, the prompt with `<document>` tags, structured JSON from the LLM, citation validation and the SPEC response schema. Spans for `abstain_gate`, `llm_generate` and `citation_check`. Settle first: the primary and secondary LLM, the Cohere key's terms and cost (Open decision #7), and the starting abstain threshold. Timeouts, fallbacks and the cache are Slice 3.
   *Done when:* unit tests with fakes cover each citation rule, the abstain path and malformed LLM output, and one opt-in `paid` test answers a question from a real document.
 - [x] **16. Eval corpus and personas.** In `eval/golden/`: an FDA/ICH corpus and golden set, rebuilt because ClinRAG's no longer exist (12 FDA guidances; 150 answerable and 30 unanswerable questions; DECISIONS 2026-11-22, "Step 16"), a small synthetic corpus for a second tenant, canary documents per tenant and role level, the prompt-injection document and the 6 personas. A script loads it all through the real ingest path onto the Neon `eval` branch.
   *Done when:* the corpus is indexed on that branch and the golden set files are committed.

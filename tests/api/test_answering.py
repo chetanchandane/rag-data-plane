@@ -84,9 +84,10 @@ GOOD = answered(
 class FakeLlm:
     """Per model id: a ModelAnswer, None (unusable output) or an exception to raise."""
 
-    def __init__(self, **outcomes) -> None:
-        self.outcomes = {PRIMARY.model_id: outcomes.get("primary", GOOD)}
-        self.outcomes[SECONDARY.model_id] = outcomes.get("secondary", GOOD)
+    def __init__(self, config: AnswerConfig | None = None, **outcomes) -> None:
+        config = config or CONFIG
+        self.outcomes = {config.primary.model_id: outcomes.get("primary", GOOD)}
+        self.outcomes[config.secondary.model_id] = outcomes.get("secondary", GOOD)
         self.calls: list[tuple[LlmModel, str, str]] = []
 
     def __call__(self, model: LlmModel, system: str, prompt: str) -> Generation:
@@ -107,11 +108,11 @@ def server_error() -> ClientError:
     return ClientError({"Error": {"Code": "ServiceUnavailableException"}}, "Converse")
 
 
-async def ask(*chunks, reranker=None, llm=None, query="What does the PEP do?", **kw):
+async def ask(*chunks, reranker=None, llm=None, query="What does the PEP do?", config=CONFIG, **kw):
     reranker = FakeReranker() if reranker is None else reranker
-    llm = llm or FakeLlm()
+    llm = llm or FakeLlm(config)
     result = await answer_query(
-        query, recalled(*chunks, **kw), reranker=reranker, generate=llm, config=CONFIG
+        query, recalled(*chunks, **kw), reranker=reranker, generate=llm, config=config
     )
     return result, llm
 
@@ -279,6 +280,34 @@ async def test_a_failed_primary_falls_back_to_the_secondary(primary_failure):
     assert not result.abstained and result.answer == GOOD.answer
     assert result.degraded == ["llm_primary"]
     assert llm.models_called == [PRIMARY.model_id, SECONDARY.model_id]
+
+
+# The production pair since 2026-11-24 (DECISIONS, "LLMs without Anthropic"): neither is
+# Claude, and the secondary is an in-Region id, not a us.* profile.
+PRODUCTION = AnswerConfig(
+    LlmModel("us.amazon.nova-2-lite-v1:0", "low"),
+    LlmModel("qwen.qwen3-235b-a22b-2507-v1:0"),
+    abstain_threshold=0.3,
+    context_chunks=5,
+)
+
+
+async def test_the_production_pair_fails_over_from_nova_to_qwen():
+    llm = FakeLlm(PRODUCTION, primary=server_error())
+    result, _ = await ask(PEP, llm=llm, config=PRODUCTION)
+    assert not result.abstained and result.degraded == ["llm_primary"]
+    assert llm.models_called == [PRODUCTION.primary.model_id, PRODUCTION.secondary.model_id]
+    assert result.cost_usd == pytest.approx((1000 * 0.22 + 100 * 0.88) / 1e6)  # Qwen's price
+
+
+async def test_each_models_failure_is_on_the_span_under_its_role(spans):
+    # Two non-Claude models: a per-provider key would make the second failure hide the first.
+    llm = FakeLlm(PRODUCTION, primary=server_error(), secondary=None)
+    result, _ = await ask(PEP, llm=llm, config=PRODUCTION)
+    assert result.abstain_reason == LLM_OUTPUT_INVALID
+    generate = next(s for s in spans.get_finished_spans() if s.name == "llm_generate")
+    assert generate.attributes["llm.error.primary"] == "ClientError"
+    assert generate.attributes["llm.invalid.secondary"] == "tool_use"
 
 
 async def test_both_models_down_is_an_abstain_not_an_error():

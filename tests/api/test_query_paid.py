@@ -1,12 +1,13 @@
-"""One real answer from a real document (step 15's "done when"). Opt-in: it calls Bedrock
-(Titan embeddings, the LLMs) and Cohere, and writes to the Neon dev branch.
+"""Real answers from a real document (step 15's "done when"), from each production LLM:
+the primary, and the secondary after a forced failover. Opt-in: it calls Bedrock (Titan
+embeddings, the LLMs) and Cohere, and writes to the Neon dev branch.
 
     uv run pytest -m paid tests/api/test_query_paid.py
 
 Needs in .env: DATABASE_URL_API, DATABASE_URL_INGEST, AWS_PROFILE (an `aws login` session)
 and a Cohere key: COHERE_API_KEY, or read from SSM (/ragdp/prod/cohere_api_key) when it's
 unset. The PDF is samples/NIST.SP.800-207-p1-20.pdf (gitignored; see samples/README.md).
-Cost: about 20 Titan embeddings, one Cohere search and one or two LLM calls, under $0.01.
+Cost per case: about 20 Titan embeddings, one Cohere search and one LLM answer, under $0.01.
 """
 
 import functools
@@ -20,7 +21,15 @@ import pytest
 from api.llm import generate, llm_client
 from api.rerank import CohereReranker
 from shared.embedding import embed_batch, embed_text, make_bedrock_client, query_client
-from tests.api.apphelpers import MODEL_ID, REGION, build_app, client, cohere_key
+from tests.api.apphelpers import (
+    MODEL_ID,
+    PRIMARY_LLM,
+    REGION,
+    build_app,
+    client,
+    cohere_key,
+    make_settings,
+)
 from worker.local import register
 from worker.pipeline import ingest_version
 
@@ -59,8 +68,20 @@ async def nist_tenant(ingest_pool, new_tenant) -> uuid.UUID:
     return tenant
 
 
-async def test_a_real_question_gets_a_cited_answer(api_pool, nist_tenant):
+# A model id Bedrock rejects (ValidationException), so the primary always fails and the
+# secondary must answer. Not Haiku: if the account's Anthropic access is ever granted, Haiku
+# would answer and this case would stop testing the failover.
+NO_SUCH_MODEL = "us.amazon.no-such-model-v1:0"
+
+
+@pytest.mark.parametrize(
+    ("primary", "degraded"),
+    [(PRIMARY_LLM, []), (NO_SUCH_MODEL, ["llm_primary"])],
+    ids=["primary-answers", "secondary-answers-after-failover"],
+)
+async def test_a_real_question_gets_a_cited_answer(api_pool, nist_tenant, primary, degraded):
     app = build_app(api_pool, nist_tenant, role_level=1)
+    app.state.settings = make_settings(llm_primary_model_id=primary)
     app.state.embed_query = functools.partial(embed_text, query_client(REGION), model_id=MODEL_ID)
     app.state.generate = functools.partial(generate, llm_client(REGION))
 
@@ -75,6 +96,8 @@ async def test_a_real_question_gets_a_cited_answer(api_pool, nist_tenant):
     assert out["abstained"] is False, out["abstain_reason"]
     assert out["citations"], "an answer always has citations"
     assert out["top_rerank_score"] >= app.state.settings.abstain_threshold
-    # The primary must have answered: "llm_primary" here means Haiku failed and Nova answered
-    # (for example while the account's Bedrock access to Anthropic models isn't approved).
-    assert out["degraded"] == [], out["degraded"]
+    # Which model answered: [] is the primary; ["llm_primary"] means the primary failed and
+    # the secondary answered.
+    assert out["degraded"] == degraded, out["degraded"]
+    # Both production models have a known price, so a null cost means an unexpected model.
+    assert out["usage"]["cost_usd"] is not None

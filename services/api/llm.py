@@ -2,16 +2,19 @@
 "Step 15").
 
 Converse is one request shape for every Bedrock model, so the failover from the primary
-(Claude Haiku 5.5) to the secondary (Amazon Nova 2 Lite) crosses providers with no second
-SDK or API key. Both are US cross-region inference profiles (us.*), so inference stays in
-US Regions.
+(Amazon Nova 2 Lite) to the secondary (Qwen3 235B) crosses providers with no second SDK or
+API key. Nova is a US cross-region inference profile (us.*); Qwen is called directly in
+us-east-2. Either way inference stays in US Regions. Claude Haiku 5.5 was the first primary
+and its request shape is kept below, but this account is refused Anthropic models
+(DECISIONS 2026-11-24, "LLMs without Anthropic").
 
 The model answers by calling one tool, submit_answer, whose input is the structured answer.
 How the tool is requested differs by model:
   - Claude runs with thinking on (Haiku 5.5's default) at the configured effort. Anthropic
     models don't accept a forced tool choice while thinking, so Claude gets toolChoice
     "auto" and the system prompt tells it to call the tool.
-  - Other models (Nova) get the forced choice, which Nova honors.
+  - Other models (Nova, Qwen) get the forced choice, which both honor (checked against the
+    real models, 2026-11-22 and 2026-11-24).
 Either way the output is validated here; anything else is reported as no answer
 (answer=None), never guessed at.
 
@@ -42,13 +45,15 @@ LLM_TIMEOUTS = Config(
     read_timeout=10,
 )
 
-# USD per million tokens (input, output), by inference profile ID.
+# USD per million tokens (input, output), by the model ID sent to Converse.
 # Nova 2 Lite: AWS Price List API, us-east-2, 2026-11-22.
+# Qwen3 235B A22B 2507: AWS Price List API, us-east-2, 2026-11-24.
 # Haiku 5.5: Anthropic's list price. Bedrock bills Anthropic models through AWS Marketplace
 # and the Price List API doesn't list them, so confirm it against the first bill.
 PRICES_PER_MILLION: dict[str, tuple[float, float]] = {
     "us.anthropic.claude-haiku-5-5": (0.10, 0.50),
     "us.amazon.nova-2-lite-v1:0": (0.33, 2.75),
+    "qwen.qwen3-235b-a22b-2507-v1:0": (0.22, 0.88),
 }
 
 ANSWER_SCHEMA = {
@@ -103,7 +108,7 @@ class ModelAnswer(BaseModel):
 
 @dataclass(frozen=True)
 class LlmModel:
-    model_id: str  # an inference profile ID, e.g. us.anthropic.claude-haiku-5-5
+    model_id: str  # a us.* inference profile or an in-Region model ID
     effort: str | None = None  # Claude only; None for other models
 
     @property

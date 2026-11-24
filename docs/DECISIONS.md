@@ -2,6 +2,24 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-24: LLMs without Anthropic (Nova 2 Lite primary, Qwen3 235B secondary)
+
+- **Why:** Bedrock refuses Claude Haiku 5.5 for this account: `Converse` returns `AccessDeniedException: anthropic.claude-haiku-5-5 is not available for this account … contact AWS Sales`. It does this even though `get-foundation-model-availability` reports `AVAILABLE` / `AUTHORIZED`. It's an account-level block, not IAM (an IAM denial says "is not authorized to perform"), and only AWS can lift it. A support case has been open with no response. OpenAI models are refused the same way, and Meta's Llama 4 is "Legacy" for accounts that haven't used it in 30 days.
+- **Decision** (Chetan, 2026-11-24): **Amazon Nova 2 Lite is the primary** (`us.amazon.nova-2-lite-v1:0`, unchanged profile) and **Qwen3 235B A22B 2507 is the secondary** (`qwen.qwen3-235b-a22b-2507-v1:0`, called directly in us-east-2).
+  - **The failover still crosses providers** (Amazon to Qwen), and both models get the forced `submit_answer` tool choice.
+  - **Qwen was the cheapest of four candidates that passed a forced-tool-call probe** on this account (Qwen3 235B, DeepSeek v3.2, GLM 4.7, Kimi K2.5). It costs $0.22 / $0.88 per million input / output tokens in us-east-2 (Price List API, 2026-11-24).
+  - **Data stays in AWS:** Qwen runs in us-east-2 as an AWS-hosted model, not a call to its maker.
+- **Rejected:**
+  - **Waiting for AWS:** no date, and it blocks steps 15 and 18.
+  - **Mistral as the secondary:** Mistral Large 3 wrote the golden questions, and an answering model shouldn't be graded on its own phrasing.
+  - **Llama 4 Maverick:** no forced tool choice, and refused as Legacy.
+  - **Anthropic's own API:** a second SDK and API key, giving up Converse as the one request shape.
+- **Haiku's code path stays** (auto tool choice plus `output_config.effort`; still tested only against a fake). If AWS lifts the block, switching back means changing the two ids in `prod.tfvars` and `.env`.
+- **Terraform:** an LLM id is now either a `us.*` profile (IAM: the profile, plus its model in each routed Region only through that profile) or an in-Region model id (IAM: that one model in us-east-2). Other geographies' profiles (`global.`, `eu.`, …) are refused, so inference stays in US Regions. The bootstrap boundary already allows foundation models in us-east-2, so it doesn't need a new apply.
+- **Span attributes are keyed by role** (`llm.error.primary`, `llm.invalid.secondary`), not by provider. With two non-Claude models, the old `claude`/`other` keys would have let the secondary's failure overwrite the primary's.
+- **Deferred to Slice 3's timeout tuning:** `MAX_OUTPUT_TOKENS` (4096) was sized for Claude's thinking. At Nova's or Qwen's speeds, a runaway answer reaches the 10 s read timeout before 4096 tokens, so it fails over as `llm_unavailable` rather than `llm_output_invalid`. Total time stays bounded either way. A smaller cap for non-Claude models waits for step 18's answer lengths, so it can't cut off real answers.
+- **Proof** (`tests/api/test_query_paid.py`, 2026-11-24): Nova answered a NIST SP 800-207 question with citations (top rerank score 0.88, $0.0022). With the primary forced to fail, Qwen answered the same question, its citations passed the checks, and the response carried `degraded: ["llm_primary"]` ($0.0009).
+
 ## 2026-11-24: The `eval` branch never expires
 
 - **What went wrong:** every CI `leak` job up to 2026-11-23 failed at branch creation with a bare 400 from Neon, before any test ran. So the leak matrix had never run in CI, and `main` was red, which held back production migrations and deploys.
@@ -88,6 +106,7 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
   - **Claude runs with thinking at effort `low`** (`LLM_PRIMARY_EFFORT`), sent as `additionalModelRequestFields.output_config.effort`. Nova gets no effort setting.
   - **IAM:** `bedrock:InvokeModel` on both profile ARNs, and on each model in the three Regions with the condition `bedrock:InferenceProfileArn` equal to one of the profiles, so the models can't be called directly. The bootstrap boundary gains the US Regions' foundation models and this account's `us.*` profiles; Chetan applies bootstrap.
   - **Not verified yet:** the account had no access to Anthropic models (`agreementAvailability: NOT_AVAILABLE`; Bedrock's one-time use-case form wasn't filled in). So Haiku's request shape (auto tool choice, `output_config.effort`) is tested only against a fake until the paid test runs. Nova's forced tool choice was checked against the real model.
+  - **Superseded 2026-11-24:** Bedrock refuses Haiku for this account, so Nova 2 Lite is now the primary and Qwen3 235B the secondary. See "LLMs without Anthropic".
 - **Structured output is one tool call, `submit_answer`,** with `answerable`, `answer` and `citations` (`chunk_id`, `quote`).
   - **Claude gets `toolChoice: auto`** plus an instruction, because Anthropic models refuse a forced tool choice while thinking. **Nova gets the forced choice.**
   - **Rejected: Converse's `outputConfig` JSON schema.** Nova 2 Lite rejects it ("This model doesn't support the outputConfig field").

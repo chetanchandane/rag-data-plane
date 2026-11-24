@@ -16,12 +16,12 @@ variable "embedding_model_id" {
 }
 
 variable "llm_primary_model_id" {
-  description = "Primary LLM's inference profile ID (us.*)."
+  description = "Primary LLM: a us.* inference profile or an in-Region model id."
   type        = string
 }
 
 variable "llm_secondary_model_id" {
-  description = "Secondary LLM's inference profile ID (us.*)."
+  description = "Secondary LLM: a us.* inference profile or an in-Region model id."
   type        = string
 }
 

@@ -54,20 +54,15 @@ Same reason as above: the API Lambda needs an image in a repository this stack c
 
 ## Adding answers (step 15, once)
 
-`POST /v1/query` reranks with Cohere and answers with Claude Haiku 5.5, falling back to Amazon Nova 2 Lite (DECISIONS 2026-11-22, "Step 15"). Do these before the push that deploys it; without them the API still runs, degraded.
+`POST /v1/query` reranks with Cohere and answers with Amazon Nova 2 Lite, falling back to Qwen3 235B (DECISIONS 2026-11-22, "Step 15", and 2026-11-24, "LLMs without Anthropic"). Both are AWS-billed Bedrock models, so no model-access form or Marketplace subscription is needed. Do these before the push that deploys it; without them the API still runs, degraded.
 
-1. **Let the account use Anthropic models.** Bedrock asks once per account for use-case details: Bedrock console → Model catalog → Claude Haiku 5.5 → submit the form. Then check:
-   ```bash
-   aws bedrock get-foundation-model-availability --profile ragdp --region us-east-2 \
-     --model-id anthropic.claude-haiku-5-5 --query agreementAvailability.status
-   ```
-   Until this shows `AVAILABLE`, Haiku is refused and every answer comes from Nova, flagged `degraded: ["llm_primary"]`. AWS creates the account's Marketplace subscription on the first call; make that call from your own login (the paid test in `tests/api/test_query_paid.py` does), since the API's role can't subscribe.
+1. **(Only if switching back to Claude.)** This account is refused Anthropic models (`AccessDeniedException … not available for this account`), even though `get-foundation-model-availability` reports them as available. Check with one real call, not the availability API, before changing `prod.tfvars`. Anthropic models are billed through Marketplace: AWS creates the subscription on the first call, so make that call from your own login (the API's role can't subscribe).
 2. **Store the Cohere Production key** the same way as the other keys. The prompt hides it:
    ```bash
    uv run python -c "import boto3, getpass; boto3.Session(profile_name='ragdp').client('ssm', region_name='us-east-2').put_parameter(Name='/ragdp/prod/cohere_api_key', Type='SecureString', Value=getpass.getpass('Cohere key: '), Overwrite=True)"
    ```
    Without it the API logs `reranker off` and answers with RRF order and `degraded: ["reranker"]`. A new key reaches the API at its next cold start.
-3. **Apply bootstrap:** the workload boundary gains the US inference profiles and the models in the Regions they route to. `AWS_PROFILE=ragdp terraform -chdir=infra/bootstrap apply`.
+3. **Apply bootstrap:** the workload boundary gains the US inference profiles and the models in the Regions they route to (it already covers every model in us-east-2, so Qwen needs nothing more). `AWS_PROFILE=ragdp terraform -chdir=infra/bootstrap apply`.
 4. **Push to `main`.**
 
 ## Every deploy after that

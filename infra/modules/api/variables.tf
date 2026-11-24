@@ -38,23 +38,35 @@ variable "embedding_model_id" {
   type        = string
 }
 
+# Each LLM is a US cross-region inference profile (us.<provider>.<model>) or a model id in
+# this Region (<provider>.<model>). The shape check refuses ARNs and anything else main.tf
+# can't build IAM ARNs from. Other geographies' profiles (global., eu., ...) would send
+# requests outside US Regions, so known prefixes are refused; a new geography prefix would
+# need adding here.
+
 variable "llm_primary_model_id" {
-  description = "Primary LLM: a US cross-region inference profile ID, called through Converse."
+  description = "Primary LLM, called through Converse: a us.* profile or an in-Region model id."
   type        = string
 
   validation {
-    condition     = startswith(var.llm_primary_model_id, "us.")
-    error_message = "Use a us.* inference profile, so inference stays in US Regions."
+    condition = (
+      can(regex("^(us\\.)?[a-z0-9-]+\\.[a-z0-9.:-]+$", var.llm_primary_model_id))
+      && !contains(["global", "eu", "apac", "jp", "au", "ca", "us-gov"], split(".", var.llm_primary_model_id)[0])
+    )
+    error_message = "Use us.<provider>.<model> (a US inference profile) or <provider>.<model> (in this Region), so inference stays in US Regions."
   }
 }
 
 variable "llm_secondary_model_id" {
-  description = "Secondary LLM, used when the primary fails: a us.* inference profile ID."
+  description = "Secondary LLM, used when the primary fails: a us.* profile or an in-Region model id."
   type        = string
 
   validation {
-    condition     = startswith(var.llm_secondary_model_id, "us.")
-    error_message = "Use a us.* inference profile, so inference stays in US Regions."
+    condition = (
+      can(regex("^(us\\.)?[a-z0-9-]+\\.[a-z0-9.:-]+$", var.llm_secondary_model_id))
+      && !contains(["global", "eu", "apac", "jp", "au", "ca", "us-gov"], split(".", var.llm_secondary_model_id)[0])
+    )
+    error_message = "Use us.<provider>.<model> (a US inference profile) or <provider>.<model> (in this Region), so inference stays in US Regions."
   }
 }
 
@@ -65,7 +77,7 @@ variable "llm_inference_regions" {
 }
 
 variable "llm_primary_effort" {
-  description = "Claude's effort level (low, medium or high)."
+  description = "Claude's effort level (low, medium or high); ignored by other models."
   type        = string
   default     = "low"
 }

@@ -222,13 +222,16 @@ async def _generate_with_failover(
     generations: list[Generation] = []
     failure: str | None = None
     for attempt, model in enumerate((config.primary, config.secondary)):
+        # Span attributes are keyed by role, not provider: both models may be non-Claude
+        # (Nova and Qwen), and one key for both would let the second failure hide the first.
+        role = "primary" if attempt == 0 else "secondary"
         try:
             # boto3 blocks, so it runs on a worker thread and the event loop stays free.
             generation = await asyncio.to_thread(generate, model, SYSTEM_PROMPT, prompt)
         except (BotoCoreError, ClientError) as error:
             log.warning("LLM %s failed: %s", model.model_id, type(error).__name__)
             span = trace.get_current_span()
-            span.set_attribute(f"llm.error.{_label(model)}", type(error).__name__)
+            span.set_attribute(f"llm.error.{role}", type(error).__name__)
             failure = LLM_UNAVAILABLE
             continue
         generations.append(generation)
@@ -236,13 +239,9 @@ async def _generate_with_failover(
             return generations, None, attempt > 0
         log.warning("LLM %s gave no valid answer (stop %s)", model.model_id, generation.stop_reason)
         span = trace.get_current_span()
-        span.set_attribute(f"llm.invalid.{_label(model)}", generation.stop_reason)
+        span.set_attribute(f"llm.invalid.{role}", generation.stop_reason)
         failure = LLM_OUTPUT_INVALID
     return generations, failure, True
-
-
-def _label(model: LlmModel) -> str:
-    return "claude" if model.is_claude else "other"
 
 
 def _result(

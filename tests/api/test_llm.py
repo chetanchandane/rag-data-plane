@@ -54,8 +54,20 @@ def test_claude_gets_auto_tool_choice_and_the_effort_level():
     assert request["inferenceConfig"]["maxTokens"] > 0  # always set explicitly
 
 
-def test_nova_gets_the_forced_tool_choice_and_no_claude_fields():
-    request = converse_request(NOVA, "s", "p")
+@pytest.mark.parametrize(
+    "model",
+    [
+        NOVA,
+        # As production builds it: the effort setting reaches Nova but must be ignored.
+        LlmModel("us.amazon.nova-2-lite-v1:0", "low"),
+        # Called by its in-Region id, with no us. prefix.
+        LlmModel("qwen.qwen3-235b-a22b-2507-v1:0"),
+    ],
+    ids=["nova", "nova-with-effort", "qwen"],
+)
+def test_other_models_get_the_forced_tool_choice_and_no_claude_fields(model):
+    request = converse_request(model, "s", "p")
+    assert request["modelId"] == model.model_id
     assert request["toolConfig"]["toolChoice"] == {"tool": {"name": ANSWER_TOOL_NAME}}
     assert "additionalModelRequestFields" not in request
 

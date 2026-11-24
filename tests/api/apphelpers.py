@@ -32,8 +32,9 @@ BUCKET = "ragdp-raw-test"
 REGION = "us-east-2"
 MODEL_ID = "amazon.titan-embed-text-v2:0"
 RERANK_MODEL_ID = "rerank-v5.0-fast"
-PRIMARY_LLM = "us.anthropic.claude-haiku-5-5"
-SECONDARY_LLM = "us.amazon.nova-2-lite-v1:0"
+# The production pair (infra/envs/prod/prod.tfvars); the paid test calls these for real.
+PRIMARY_LLM = "us.amazon.nova-2-lite-v1:0"
+SECONDARY_LLM = "qwen.qwen3-235b-a22b-2507-v1:0"
 
 
 def make_settings(**overrides: Any) -> Settings:

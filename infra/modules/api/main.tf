@@ -10,19 +10,25 @@ locals {
   api_log     = "/aws/lambda/${var.name_prefix}-api"
   api_log_arn = "arn:aws:logs:${var.region}:${var.account_id}:log-group:${local.api_log}"
 
-  # The LLMs' inference profiles, and the foundation models each one routes to: a us.*
-  # profile sends a request to the same model in any of llm_inference_regions.
-  llm_profile_ids = [var.llm_primary_model_id, var.llm_secondary_model_id]
+  # Each LLM is either a US cross-region inference profile (us.*), which sends a request to
+  # the same model in any of llm_inference_regions, or a model called directly in this
+  # Region (no prefix). DECISIONS 2026-11-24, "LLMs without Anthropic".
+  llm_ids         = [var.llm_primary_model_id, var.llm_secondary_model_id]
+  llm_profile_ids = [for id in local.llm_ids : id if startswith(id, "us.")]
+  llm_direct_ids  = [for id in local.llm_ids : id if !startswith(id, "us.")]
   llm_profile_arns = [
     for id in local.llm_profile_ids :
     "arn:aws:bedrock:${var.region}:${var.account_id}:inference-profile/${id}"
   ]
-  llm_model_arns = flatten([
+  llm_routed_model_arns = flatten([
     for id in local.llm_profile_ids : [
       for region in var.llm_inference_regions :
       "arn:aws:bedrock:${region}::foundation-model/${trimprefix(id, "us.")}"
     ]
   ])
+  llm_direct_model_arns = [
+    for id in local.llm_direct_ids : "arn:aws:bedrock:${var.region}::foundation-model/${id}"
+  ]
 
   # Route -> the scopes a token needs (any one of them). Coarse API permissions at the edge;
   # which rows a caller sees is still decided by role_level and RLS. whoami needs only a
@@ -124,23 +130,39 @@ data "aws_iam_policy_document" "api" {
     resources = ["arn:aws:bedrock:${var.region}::foundation-model/${var.embedding_model_id}"]
   }
 
-  # Answers (step 15): the two LLMs through their US inference profiles. Invoking a profile
-  # needs the profile itself and the model in every Region it may route to; the condition
-  # allows those models only through these profiles, never called directly.
-  statement {
-    sid       = "GenerateThroughInferenceProfiles"
-    actions   = ["bedrock:InvokeModel"]
-    resources = local.llm_profile_arns
+  # Answers (step 15). An LLM behind a US inference profile needs the profile itself and the
+  # model in every Region it may route to; the condition allows those models only through
+  # these profiles, never called directly. Skipped when neither LLM is a profile.
+  dynamic "statement" {
+    for_each = length(local.llm_profile_ids) > 0 ? [1] : []
+    content {
+      sid       = "GenerateThroughInferenceProfiles"
+      actions   = ["bedrock:InvokeModel"]
+      resources = local.llm_profile_arns
+    }
   }
 
-  statement {
-    sid       = "GenerateOnRoutedModels"
-    actions   = ["bedrock:InvokeModel"]
-    resources = local.llm_model_arns
-    condition {
-      test     = "StringLike"
-      variable = "bedrock:InferenceProfileArn"
-      values   = local.llm_profile_arns
+  dynamic "statement" {
+    for_each = length(local.llm_profile_ids) > 0 ? [1] : []
+    content {
+      sid       = "GenerateOnRoutedModels"
+      actions   = ["bedrock:InvokeModel"]
+      resources = local.llm_routed_model_arns
+      condition {
+        test     = "StringLike"
+        variable = "bedrock:InferenceProfileArn"
+        values   = local.llm_profile_arns
+      }
+    }
+  }
+
+  # An LLM called directly: only that model, only in this Region.
+  dynamic "statement" {
+    for_each = length(local.llm_direct_ids) > 0 ? [1] : []
+    content {
+      sid       = "GenerateOnModelsInRegion"
+      actions   = ["bedrock:InvokeModel"]
+      resources = local.llm_direct_model_arns
     }
   }
 
