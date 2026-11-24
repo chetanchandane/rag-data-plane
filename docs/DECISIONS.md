@@ -36,6 +36,7 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
 - **The proof that it catches a leak is a throwaway pull request** (Chetan, 2026-11-22).
   - **The broken migration** drops the role-level condition from both `chunks_api_read` and `documents_api`. Both, because the hybrid SQL joins chunks to documents: breaking only the chunks policy is caught by the documents policy in the join, so nothing would leak.
   - **Handling:** Chetan pushes the branch, CI goes red, and the PR is closed unmerged.
+  - **Result (2026-11-24, CI run 45435947816, PR #1):** the `leak` job itself failed with 1,170 leaks, each caught by both the structural and the canary check. All were role-level leaks inside a tenant (for example `a-r1` receiving `CANARY-TA-R2-…` and `CANARY-TA-R3-…`), as the broken policy predicts, since it keeps the tenant check. `db` failed too. The PR was closed unmerged. The same matrix passed on `main` in run 45434358713.
 - **The sampled `/v1/query` run is opt-in and paid, never in CI** (Chetan, 2026-11-22).
   - **Sample:** the 10 extraction questions plus 10 golden questions (seeded), as all 6 personas: 120 calls, about $0.35 (Cohere searches plus the LLMs).
   - **Checks:** canaries in the answer and in the citation quotes, and the structural check on cited documents.

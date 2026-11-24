@@ -659,7 +659,7 @@ Post: the ingestion design, the idempotency approach and the real monthly AWS bi
 
 - [x] API Gateway JWT authorizer verifies control-plane tokens via JWKS (the stand-in issuer's, step 13)
 - [ ] `/v1/retrieve` runs the hybrid SQL under RLS; `/v1/query` adds rerank, abstain and citation validation
-- [ ] RLS tests and the leak matrix pass in CI, with the canary results in the README
+- [x] RLS tests and the leak matrix pass in CI, with the canary results in the README
 - [ ] Golden-set eval runs and stores the first baseline; comparison with ClinRAG's published numbers written up
 
 Post: the leak matrix and what pgvector + RLS changed versus the Qdrant pipeline.

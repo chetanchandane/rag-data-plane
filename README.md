@@ -11,7 +11,7 @@ Every eval question (150 answerable, 30 unanswerable, 10 extraction attempts) is
 
 Each persona must also retrieve every canary it *is* allowed to see, so an empty result can't pass as "no leaks". It runs in CI on every push and pull request, and any leak fails the build (`tests/leak/`, DECISIONS 2026-11-22 "Step 17").
 
-Latest run (2026-11-22, on the `eval` branch):
+Latest run (2026-11-24, on the recreated `eval` branch; the same matrix passes in CI, run 45434358713). A deliberately broken policy on a throwaway pull request made it fail with 1,170 leaks (DECISIONS 2026-11-22, "Step 17").
 
 | Persona | Chunks returned | Documents seen | Canaries seen (all allowed) | Allowed canaries missed | Leaks |
 | --- | ---: | ---: | --- | --- | ---: |
