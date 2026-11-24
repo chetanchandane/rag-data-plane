@@ -162,7 +162,24 @@ Same rules as Slice 1. The token issuer comes first because everything after it 
 
 When step 18 is done, every Slice 2 box in SPEC: Slices is ticked (13 ticks the authorizer box, 14 and 15 the endpoints box, 17 the leak matrix box, 18 the eval box).
 
-Slices 3 and 4 get their own step list here once Slice 2 is done.
+## Build plan: Slice 3 (resilience)
+
+Same rules as Slices 1 and 2 (DECISIONS 2026-11-24, "Slice 3 step list"). Step 19 comes first because it closes the gap to SPEC's 98% citation validity, which `eval/gate.json` lowered to 95% for now. Paid runs (probes, eval runs) need Chetan's go-ahead with the expected cost each time.
+
+- [ ] **19. Faster backup model.** On 3 of 14 citation retries the backup (Qwen3 235B) timed out at 10 s. Settle first: probe GLM 4.7, Kimi K2.5 and GLM 4.7 Flash on real prompts from the failed questions for latency, output length and whether the quotes pass the citation check (about $0.05); then pick one, or re-split the 20 s between the two models. A new backup model means `prod.tfvars`, the bootstrap eval role (Chetan applies) and a price in `api/llm.py`.
+  *Done when:* a full eval (about $1) reaches at least 98% citation validity, it becomes the baseline, and `eval/gate.json` drops the temporary floor.
+- [ ] **20. Circuit breakers.** Per dependency (query embedding, reranker, primary LLM), as SPEC: Query path says: 5 failures in 30 s opens the breaker, half-open after 30 s, state per Lambda instance. While open, the dependency is skipped and its fallback runs with the same `degraded` flag. A citation retry (`citation_retry`) is not a failure. A span attribute shows the breaker state.
+  *Done when:* unit tests with faulty fakes show closed to open to half-open to closed, that the fallback runs without calling the dependency while open, and that a citation retry never trips the primary's breaker.
+- [ ] **21. `DELETE /v1/documents/{id}` and the delete job.** SPEC: Ingestion, "Deletes": `deleted_at` plus an epoch bump in one transaction (the document is hidden at once), then a `delete` job that clears `active_version` and removes chunks, versions and S3 objects. Settle first: what a delete does to a version still being ingested.
+  *Done when:* DB tests show a deleted document never appears in `/v1/retrieve` or `/v1/query`, the purge job is idempotent (run twice, crash halfway), another tenant's or a higher role's document can't be deleted, and the endpoint tests pass.
+- [ ] **22. Query cache with epoch invalidation.** SPEC: Query path, "Cache": key = SHA-256 of tenant, role level, normalized query, tenant epoch and prompt version; the unlogged `query_cache` table; 24-hour TTL; only validated, non-degraded answers are cached. A cache hit is a span attribute and a `cached` field in the response.
+  *Done when:* tests cover a hit, a miss, an epoch bump (activation or delete) invalidating, a role level never reading another level's entry (RLS), a degraded answer never cached, and the delete-through-cache test from SPEC.
+- [ ] **23. Chaos table.** Every row of SPEC: Proof, "Chaos tests": queue and worker rows on the deployed stack with a dedicated test tenant, dependency rows in CI with faulty fakes, including the DB statement timeout giving 503 with `Retry-After`.
+  *Done when:* every row passes, the results are written up (the Slice 3 post), and every Slice 3 box in SPEC: Slices is ticked.
+
+Not scheduled (decide when they come up): footnote-aware PDF parsing (DECISIONS 2026-11-24, finding; needs a new chunker version and a corpus re-ingest), `POST /v1/feedback` and `GET /healthz`, and reindex (blocked on Open decision #8).
+
+Slice 4 gets its own step list here once Slice 3 is done.
 
 <!-- BEGIN AWS Agent Toolkit rules -->
 

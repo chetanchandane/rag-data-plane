@@ -2,6 +2,17 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-24: Slice 3 step list
+
+- **Steps 19 to 23** (Chetan, 2026-11-24), in CLAUDE.md: faster backup model, circuit breakers, `DELETE` and the delete job, the query cache, the chaos table.
+- **Why this order:**
+  - **Step 19 comes first** because it's the gap between the temporary 95% floor and SPEC's 98% (3 of 14 citation retries timed out on the backup). Every later eval run then measures against the real target.
+  - **Breakers before the cache:** the cache stores only non-degraded answers, so what counts as degraded has to be settled first.
+  - **`DELETE` before the cache:** SPEC's delete-through-cache test needs both, and delete is the simpler of the two.
+  - **The chaos table comes last,** because it checks everything above.
+- **A citation retry doesn't count toward the primary's breaker** (step 20). It's a quality retry from a healthy model, which is why it has its own flag (2026-11-24, "Citation failure fails over").
+- **Not scheduled:** footnote-aware parsing (a data-quality fix that needs a corpus re-ingest; most citation failures were drift, not footnotes), `/v1/feedback` and `/healthz` (small; added when something needs them), and reindex (Open decision #8).
+
 ## 2026-11-24: Step 18 baseline and temporary floors
 
 - **The baseline is run 3** (`eval/results/2026-11-24_94a08e6ee5e1.json`, code `94a08e6`): context recall 99.3%, faithfulness 99.5%, answer relevance 96.9%, citation validity 96.7% (the primary on its own: 90.7%), abstain precision 85.7%, abstain recall 100%, p50/p95 2.5 s / 10.4 s, $2.09 per 1,000 queries. Runs 1 and 2 are committed next to it as the "before" numbers. The write-up and the ClinRAG comparison (not like for like) are in `eval/README.md`.
