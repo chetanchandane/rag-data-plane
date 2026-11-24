@@ -96,8 +96,9 @@ async def test_a_real_question_gets_a_cited_answer(api_pool, nist_tenant, primar
     assert out["abstained"] is False, out["abstain_reason"]
     assert out["citations"], "an answer always has citations"
     assert out["top_rerank_score"] >= app.state.settings.abstain_threshold
-    # Which model answered: [] is the primary; ["llm_primary"] means the primary failed and
-    # the secondary answered.
-    assert out["degraded"] == degraded, out["degraded"]
+    # Which model answered. ["llm_primary"]: the primary failed (error or unusable output)
+    # and the secondary answered. A citation_retry (the primary misquoted, about 1 answer in
+    # 10, and the secondary answered) can happen in either case and isn't a failure here.
+    assert [d for d in out["degraded"] if d != "citation_retry"] == degraded, out["degraded"]
     # Both production models have a known price, so a null cost means an unexpected model.
     assert out["usage"]["cost_usd"] is not None

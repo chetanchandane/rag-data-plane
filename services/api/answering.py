@@ -1,15 +1,17 @@
 """From recalled chunks to a validated answer (SPEC: Query path; DECISIONS 2026-11-22,
 "Step 15"):
 
-  rerank (top 5) -> abstain gate -> prompt -> primary LLM (secondary on failure)
-  -> citation check -> answer, or an abstain with a reason.
+  rerank (top 5) -> abstain gate -> prompt -> primary LLM -> citation check
+  -> answer, or (on an error, unusable output or a failed citation check) the same for
+  the secondary, once -> answer, or an abstain with a reason.
 
 Nothing reaches the caller without passing the citation check. Every failure after recall
 becomes an abstain or a degraded flag, never a 500.
 
 Spans (children of the route's `query` span): rerank, abstain_gate, llm_generate,
-citation_check. Attributes are scores, counts, model ids and outcomes, never the question,
-the chunks or the answer.
+citation_check (llm_generate and citation_check once per attempt, with its role).
+Attributes are scores, counts, model ids and outcomes, never the question, the chunks or the
+answer.
 """
 
 import asyncio
@@ -56,9 +58,16 @@ longer, quote its most important sentence.
 NO_RESULTS = "no_results"  # recall found nothing the caller may see
 LOW_RELEVANCE = "low_relevance"  # the top rerank score is below the threshold
 NOT_IN_DOCUMENTS = "not_in_documents"  # the model says the documents don't answer it
+# An answer failed the check, and no later attempt gave a valid one.
 CITATION_CHECK_FAILED = "citation_check_failed"  # SPEC: Citation validation
-LLM_UNAVAILABLE = "llm_unavailable"  # SPEC: both models failed (an error)
-LLM_OUTPUT_INVALID = "llm_output_invalid"  # both failed, the last with unusable output
+LLM_UNAVAILABLE = "llm_unavailable"  # no model answered: the last attempt was an error
+LLM_OUTPUT_INVALID = "llm_output_invalid"  # no model answered: the last was unusable output
+
+# degraded flags for the LLM step. llm_primary: the primary errored or gave unusable output
+# (an outage signal; Slice 3's circuit breaker counts these). citation_retry: the primary
+# answered but failed the citation check, so the secondary answered instead.
+DEGRADED_LLM_PRIMARY = "llm_primary"
+DEGRADED_CITATION_RETRY = "citation_retry"
 
 # A chunk can't open or close a <document> tag of its own: a tenant's PDF could otherwise
 # end its document early and write text that looks like ours.
@@ -168,41 +177,62 @@ async def answer_query(
     if reason:
         return abstain(reason)
 
+    # The primary, then the secondary once if the primary's answer is unusable: an error, a
+    # malformed tool call, or an answer that fails the citation check (DECISIONS 2026-11-24,
+    # "Citation failure fails over"). Quote errors are about 1 in 10 and don't repeat by
+    # question, so a second model's attempt recovers most of them. At most two LLM calls,
+    # as before. Every generation that came back is billed.
     prompt = build_prompt(query, context)
-    with tracer.start_as_current_span("llm_generate") as span:
-        generations, failure, primary_failed = await _generate_with_failover(
-            generate, config, prompt
-        )
-        if primary_failed:
-            degraded.append("llm_primary")
-        span.set_attributes(
-            {
-                "llm.prompt_version": PROMPT_VERSION,
-                "llm.context_chunks": len(context),
-                "llm.models_answered": ",".join(g.model_id for g in generations),
-                "llm.failure": failure or "",
-            }
-        )
-    if failure is not None:
-        return abstain(failure, *generations)
-    generation = generations[-1]
-    answer = generation.answer
-    assert answer is not None  # without a failure, the last generation has a valid answer
+    generations: list[Generation] = []
+    failure = LLM_UNAVAILABLE
+    for attempt, model in enumerate((config.primary, config.secondary)):
+        role = "primary" if attempt == 0 else "secondary"
+        if attempt > 0:
+            # Why the secondary is being asked: a quote error isn't an outage.
+            retry = failure == CITATION_CHECK_FAILED
+            degraded.append(DEGRADED_CITATION_RETRY if retry else DEGRADED_LLM_PRIMARY)
+        with tracer.start_as_current_span("llm_generate") as span:
+            generation, failure_now = await _generate(generate, model, prompt)
+            span.set_attributes(
+                {
+                    "llm.role": role,
+                    "llm.model": model.model_id,
+                    "llm.prompt_version": PROMPT_VERSION,
+                    "llm.context_chunks": len(context),
+                    "llm.failure": failure_now or "",
+                }
+            )
+        if generation is not None:
+            generations.append(generation)
+        if failure_now is not None:
+            # An answer that was checked and failed says more than a later error: the
+            # primary did answer, so the reason stays citation_check_failed.
+            if failure != CITATION_CHECK_FAILED:
+                failure = failure_now
+            continue
+        answer = generation.answer if generation else None
+        assert answer is not None  # _generate reports no failure only for a valid answer
 
-    if not answer.answerable:
-        return abstain(NOT_IN_DOCUMENTS, *generations)
+        if not answer.answerable:
+            # A decision, not a failure: the secondary isn't asked to second-guess it.
+            return abstain(NOT_IN_DOCUMENTS, *generations)
 
-    with tracer.start_as_current_span("citation_check") as span:
-        citations, rule = check_citations(answer, context)
-        span.set_attributes(
-            {"citation.count": len(answer.citations), "citation.failure": rule or ""}
-        )
-    if rule is not None:
+        with tracer.start_as_current_span("citation_check") as span:
+            citations, rule = check_citations(answer, context)
+            span.set_attributes(
+                {
+                    "citation.role": role,
+                    "citation.count": len(answer.citations),
+                    "citation.failure": rule or "",
+                }
+            )
+        if rule is None:
+            return _result(answer.answer, None, citations, degraded, top_score, generations)
         # A rising rate means the prompt or the model regressed (SPEC).
-        log.warning("citation check failed (%s) for %s", rule, generation.model_id)
-        return abstain(CITATION_CHECK_FAILED, *generations)
+        log.warning("citation check failed (%s) for %s", rule, model.model_id)
+        failure = CITATION_CHECK_FAILED
 
-    return _result(answer.answer, None, citations, degraded, top_score, generations)
+    return abstain(failure, *generations)
 
 
 def _gate(context: list[RetrievedChunk], top_score: float | None, threshold: float) -> str | None:
@@ -216,36 +246,23 @@ def _gate(context: list[RetrievedChunk], top_score: float | None, threshold: flo
     return None
 
 
-async def _generate_with_failover(
-    generate: Generate, config: AnswerConfig, prompt: str
-) -> tuple[list[Generation], str | None, bool]:
-    """The primary, then the secondary if the primary errs or gives unusable output.
-
-    Returns every generation that came back (all of them are billed), the failure reason if
-    neither model gave a valid answer (else None), and whether the primary failed."""
-    generations: list[Generation] = []
-    failure: str | None = None
-    for attempt, model in enumerate((config.primary, config.secondary)):
-        # Span attributes are keyed by role, not provider: both models may be non-Claude
-        # (Nova and Qwen), and one key for both would let the second failure hide the first.
-        role = "primary" if attempt == 0 else "secondary"
-        try:
-            # boto3 blocks, so it runs on a worker thread and the event loop stays free.
-            generation = await asyncio.to_thread(generate, model, SYSTEM_PROMPT, prompt)
-        except (BotoCoreError, ClientError) as error:
-            log.warning("LLM %s failed: %s", model.model_id, type(error).__name__)
-            span = trace.get_current_span()
-            span.set_attribute(f"llm.error.{role}", type(error).__name__)
-            failure = LLM_UNAVAILABLE
-            continue
-        generations.append(generation)
-        if generation.answer is not None:
-            return generations, None, attempt > 0
+async def _generate(
+    generate: Generate, model: LlmModel, prompt: str
+) -> tuple[Generation | None, str | None]:
+    """One model's attempt: (the generation if one came back, the failure reason or None).
+    The error goes on this attempt's own llm_generate span, which carries llm.role."""
+    try:
+        # boto3 blocks, so it runs on a worker thread and the event loop stays free.
+        generation = await asyncio.to_thread(generate, model, SYSTEM_PROMPT, prompt)
+    except (BotoCoreError, ClientError) as error:
+        log.warning("LLM %s failed: %s", model.model_id, type(error).__name__)
+        trace.get_current_span().set_attribute("llm.error", type(error).__name__)
+        return None, LLM_UNAVAILABLE
+    if generation.answer is None:
         log.warning("LLM %s gave no valid answer (stop %s)", model.model_id, generation.stop_reason)
-        span = trace.get_current_span()
-        span.set_attribute(f"llm.invalid.{role}", generation.stop_reason)
-        failure = LLM_OUTPUT_INVALID
-    return generations, failure, True
+        trace.get_current_span().set_attribute("llm.invalid", generation.stop_reason)
+        return generation, LLM_OUTPUT_INVALID
+    return generation, None
 
 
 def _result(

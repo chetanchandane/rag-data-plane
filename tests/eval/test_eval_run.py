@@ -158,13 +158,25 @@ def new_results_path(stem: str) -> Path:
 
 
 def stage_durations(finished_spans) -> dict[str, dict[str, float]]:
-    """trace id (hex, as the response's trace_id) -> {span name: ms}."""
+    """trace id (hex, as the response's trace_id) -> {span name: ms}. A stage that ran twice
+    (llm_generate and citation_check after a failover) counts its total time."""
     by_trace: dict[str, dict[str, float]] = {}
     for span in finished_spans:
         if span.name in metrics.STAGES:
-            trace_id = format(span.context.trace_id, "032x")
-            by_trace.setdefault(trace_id, {})[span.name] = (span.end_time - span.start_time) / 1e6
+            stages = by_trace.setdefault(format(span.context.trace_id, "032x"), {})
+            ms = (span.end_time - span.start_time) / 1e6
+            stages[span.name] = stages.get(span.name, 0.0) + ms
     return by_trace
+
+
+def primary_citation_checks(finished_spans) -> dict[str, bool]:
+    """trace id -> whether the primary's answer passed the citation check (traces where the
+    primary's answer was checked). Read from the per-attempt citation_check spans."""
+    return {
+        format(span.context.trace_id, "032x"): span.attributes["citation.failure"] == ""
+        for span in finished_spans
+        if span.name == "citation_check" and span.attributes.get("citation.role") == "primary"
+    }
 
 
 async def test_eval_run(spans):
@@ -215,7 +227,9 @@ async def test_eval_run(spans):
     finally:
         await pool.close()
 
-    durations = stage_durations(spans.get_finished_spans())
+    finished = spans.get_finished_spans()
+    durations = stage_durations(finished)
+    primary_checks = primary_citation_checks(finished)
     results: list[metrics.QuestionResult] = []
     contexts: dict[str, list[str]] = {}
     for q in questions:
@@ -233,6 +247,7 @@ async def test_eval_run(spans):
             citations=len(out["citations"]),
             llm_cost_usd=out["usage"]["cost_usd"] or 0.0,
             stage_ms=durations.get(out["trace_id"], {}),
+            primary_citation_ok=primary_checks.get(out["trace_id"]),
         )
         if q["kind"] == metrics.ANSWERABLE:
             result.quote_in_context = metrics.quote_found(q["quote"], context)

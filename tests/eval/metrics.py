@@ -18,7 +18,11 @@ ANSWERABLE, UNANSWERABLE = "answerable", "unanswerable"
 MAX_DROP = 0.03
 CITATION_VALIDITY_MIN = 0.98
 JUDGE_COVERAGE_MIN = 0.95  # below this, faithfulness and relevance aren't trustworthy
-GATED_SCORES = ("context_recall", "faithfulness", "answer_relevance")
+# Gated against the baseline. primary_citation_validity is the primary model's own quote
+# accuracy, before the citation retry: the retry hides a regression from the end result,
+# so this is what catches a worse prompt or model (SPEC: "a rising rate means the prompt or
+# model regressed").
+GATED_SCORES = ("context_recall", "faithfulness", "answer_relevance", "primary_citation_validity")
 # A request that lost these measured another system (lexical-only recall, RRF order).
 INVALIDATING_DEGRADATIONS = ("embedding", "reranker")
 # Abstains that mean no model gave an answer: an outage or a permissions error, not a
@@ -53,6 +57,9 @@ class QuestionResult:
     faithfulness: float | None = None  # answered only; None if the judge failed
     claims: int = 0
     answer_relevance: float | None = None  # answered only; None if the judge failed
+    # The primary's answer passed the citation check: None if it gave no checked answer
+    # (an error, unusable output, or "not answerable").
+    primary_citation_ok: bool | None = None
     stage_ms: dict[str, float] = field(default_factory=dict)
 
     @property
@@ -109,7 +116,11 @@ def summarize(results: list[QuestionResult]) -> dict:
         "context_recall": _mean([float(r.quote_in_context) for r in answerable]),
         "faithfulness": _mean([r.faithfulness for r in answered_answerable]),
         "answer_relevance": _mean([r.answer_relevance for r in answered_answerable]),
+        # What users get: answers that passed, after any citation retry.
         "citation_validity": _ratio(len(answered), len(answered) + citation_failed),
+        "primary_citation_validity": _mean(
+            [float(r.primary_citation_ok) for r in results if r.primary_citation_ok is not None]
+        ),
         "abstain_precision": _ratio(
             len([r for r in abstained if r.kind == UNANSWERABLE]), len(abstained)
         ),
@@ -160,7 +171,7 @@ def gate_failures(summary: dict, baseline: dict | None, floors: dict) -> list[st
         failures.append(f"abstain precision {precision} is below its floor {floor}")
     if baseline is not None:
         for name in GATED_SCORES:
-            now, then = summary[name], baseline[name]
+            now, then = summary.get(name), baseline.get(name)
             if then is not None and (now is None or now < then - MAX_DROP):
                 failures.append(
                     f"{name} {now} dropped more than {MAX_DROP:.0%} points from {then:.3f}"
@@ -200,7 +211,8 @@ def render_report(summary: dict, meta: dict) -> str:
         f"| Faithfulness | {pct(summary['faithfulness'])} |",
         f"| Answer relevance | {pct(summary['answer_relevance'])} |",
         f"| Answered rate (answerable) | {pct(summary['answered_rate'])} |",
-        f"| Citation validity | {pct(summary['citation_validity'])} |",
+        f"| Citation validity (after retry) | {pct(summary['citation_validity'])} |",
+        f"| Primary's citation validity | {pct(summary['primary_citation_validity'])} |",
         f"| Abstain precision | {pct(summary['abstain_precision'])} |",
         f"| Abstain recall (unanswerable) | {pct(summary['abstain_recall'])} |",
         f"| Judge coverage | {pct(summary['judge_coverage'])} |",

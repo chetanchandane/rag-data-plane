@@ -186,7 +186,7 @@ def test_one_bad_citation_fails_the_whole_answer():
     assert check_citations(both, [PEP, PDP]) == ([], "quote_not_found")
 
 
-@pytest.mark.parametrize(
+BAD_CITATIONS = pytest.mark.parametrize(
     "bad",
     [
         answered("x", cite(chunk("enables"), "enables")),
@@ -195,18 +195,63 @@ def test_one_bad_citation_fails_the_whole_answer():
     ],
     ids=["unknown_chunk", "quote_not_found", "no_citation"],
 )
-async def test_a_failed_citation_check_becomes_an_abstain(bad, spans):
+
+
+@BAD_CITATIONS
+async def test_a_failed_citation_check_fails_over_to_the_secondary(bad, spans):
+    # DECISIONS 2026-11-24, "Citation failure fails over": an answer that fails the check
+    # is unusable output, so the secondary gets its one try.
     result, llm = await ask(PEP, PDP, llm=FakeLlm(primary=bad))
-    assert result.abstained and result.abstain_reason == CITATION_CHECK_FAILED
-    assert result.answer is None and result.citations == []
-    assert llm.models_called == [PRIMARY.model_id]  # not a model failure: no failover
-    assert result.input_tokens == 1000  # still billed and reported
-    check = next(s for s in spans.get_finished_spans() if s.name == "citation_check")
-    assert check.attributes["citation.failure"] in {
+    assert not result.abstained and result.answer == GOOD.answer
+    # Its own flag: a quote error isn't an outage (llm_primary is for those).
+    assert result.degraded == ["citation_retry"]
+    assert llm.models_called == [PRIMARY.model_id, SECONDARY.model_id]
+    assert result.input_tokens == 2000  # both generations are billed
+    checks = [s for s in spans.get_finished_spans() if s.name == "citation_check"]
+    assert [c.attributes["citation.role"] for c in checks] == ["primary", "secondary"]
+    assert checks[0].attributes["citation.failure"] in {
         "unknown_chunk",
         "quote_not_found",
         "no_citation",
     }
+    assert checks[1].attributes["citation.failure"] == ""
+
+
+@BAD_CITATIONS
+async def test_both_models_failing_the_citation_check_is_an_abstain(bad):
+    result, llm = await ask(PEP, PDP, llm=FakeLlm(primary=bad, secondary=bad))
+    assert result.abstained and result.abstain_reason == CITATION_CHECK_FAILED
+    assert result.answer is None and result.citations == []
+    assert llm.models_called == [PRIMARY.model_id, SECONDARY.model_id]  # never a third call
+    assert result.input_tokens == 2000
+
+
+async def test_the_secondarys_citation_failure_after_a_primary_error_is_an_abstain():
+    bad = answered("x", cite(PEP, "made-up quote"))
+    result, llm = await ask(PEP, llm=FakeLlm(primary=server_error(), secondary=bad))
+    assert result.abstain_reason == CITATION_CHECK_FAILED
+    assert len(llm.models_called) == 2
+
+
+@pytest.mark.parametrize(
+    "secondary_failure",
+    [server_error(), None],
+    ids=["secondary_error", "secondary_malformed"],
+)
+async def test_a_citation_failure_outranks_a_later_secondary_failure(secondary_failure):
+    # The primary did answer (badly quoted): the reason says so, not "no LLM answered".
+    bad = answered("x", cite(PEP, "made-up quote"))
+    result, llm = await ask(PEP, llm=FakeLlm(primary=bad, secondary=secondary_failure))
+    assert result.abstain_reason == CITATION_CHECK_FAILED
+    assert result.degraded == ["citation_retry"]
+    assert len(llm.models_called) == 2
+
+
+async def test_not_answerable_from_the_primary_is_final():
+    unanswerable = ModelAnswer(answerable=False, answer="", citations=[])
+    result, llm = await ask(PEP, llm=FakeLlm(primary=unanswerable))
+    assert result.abstain_reason == NOT_IN_DOCUMENTS
+    assert llm.models_called == [PRIMARY.model_id]  # a decision, not a failure: no failover
 
 
 def test_normalize_collapses_whitespace_and_case_only():
@@ -305,9 +350,10 @@ async def test_each_models_failure_is_on_the_span_under_its_role(spans):
     llm = FakeLlm(PRODUCTION, primary=server_error(), secondary=None)
     result, _ = await ask(PEP, llm=llm, config=PRODUCTION)
     assert result.abstain_reason == LLM_OUTPUT_INVALID
-    generate = next(s for s in spans.get_finished_spans() if s.name == "llm_generate")
-    assert generate.attributes["llm.error.primary"] == "ClientError"
-    assert generate.attributes["llm.invalid.secondary"] == "tool_use"
+    attempts = [s for s in spans.get_finished_spans() if s.name == "llm_generate"]
+    assert [a.attributes["llm.role"] for a in attempts] == ["primary", "secondary"]
+    assert attempts[0].attributes["llm.error"] == "ClientError"
+    assert attempts[1].attributes["llm.invalid"] == "tool_use"
 
 
 async def test_both_models_down_is_an_abstain_not_an_error():
@@ -368,7 +414,8 @@ async def test_spans_carry_scores_and_outcomes_but_no_text(spans):
     assert {"rerank", "abstain_gate", "llm_generate", "citation_check"} <= finished.keys()
     assert finished["rerank"].attributes["rerank.top_score"] == pytest.approx(0.9)
     assert finished["abstain_gate"].attributes["abstain.top_score"] == pytest.approx(0.9)
-    assert finished["llm_generate"].attributes["llm.models_answered"] == PRIMARY.model_id
+    assert finished["llm_generate"].attributes["llm.model"] == PRIMARY.model_id
+    assert finished["llm_generate"].attributes["llm.role"] == "primary"
     for span in finished.values():
         for value in span.attributes.values():
             assert "secret" not in str(value) and "enables" not in str(value)

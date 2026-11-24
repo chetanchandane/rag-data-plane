@@ -2,6 +2,28 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-24: Citation failure fails over (and what the first eval runs found)
+
+- **Run 1** (`fb3a82c`, prompt `2026-11-22.1`) failed the gate.
+  - **Citation validity was 89.9%,** against SPEC's 98% floor.
+  - **2 answers were lost to timeouts:** Nova and then Qwen both passed 10 s.
+  - **Retrieval was fine:** context recall 99.3%, faithfulness 99.5%, and all 30 unanswerable questions were refused at the relevance gate.
+- **Prompt `2026-11-24.1`** asks for one-sentence quotes of about 25 words, copied character for character, and answers of about 150 words.
+  - **It fixed the length problem:** longest output 2,666 to 714 tokens, p95 end to end 7.0 s to 4.0 s, 0 timeouts, answer relevance 87.6% to 96.3%.
+  - **It barely moved quotes:** run 2 (`11be342`) had citation validity 90.7%.
+- **A misreading, corrected.** Re-asking only the 18 failed questions showed 10 citation failures drop to 4, and I first credited the prompt. But runs 1 and 2 had 15 and 14 failures with only 3 questions in common. Citation failures are about 1 in 10 per answer and don't recur by question, so re-asking failed questions was bound to show fewer. Lesson: judge a change on the full set, never on the questions that failed.
+- **Why quotes fail** (from the model's raw output on the failed questions):
+  - **Footnotes in the middle of chunk text.** PyMuPDF extracts a page's footnotes into the body text, so the model quotes the clean sentence and the strict check rightly fails it.
+  - **Drift in long quotes:** skipped sentences, and typography "fixed" (`”` to `"`, `(a)` to `a)`).
+  - **One quote that isn't in the documents at all,** which the check correctly rejected.
+- **Decision** (Chetan, 2026-11-24): **an answer that fails the citation check counts as unusable output, so the secondary model gets its one try,** as it already does after an error or malformed output. It's still at most two LLM calls, and both generations are billed. If no attempt gives a valid answer and one of them failed the check, the result is `citation_check_failed`, because the primary did answer, even if the secondary then errored.
+  - **Its own flag, `degraded: ["citation_retry"]`, not `llm_primary`.** `llm_primary` stays an outage signal (an error or unusable output) for Slice 3's circuit breaker; a misquote is a quality retry from a healthy model.
+  - **The eval also measures the primary's own citation validity** (from the per-attempt `citation_check` spans), and the gate fails if it drops more than 3 points from the baseline. The retry hides a worse primary from the end result, and catching that is why SPEC tracks the rate. The 98% rule applies to what users get, after the retry.
+  - **`llm_generate` latency in the eval now includes the second call** for retried requests, so it isn't comparable with runs 1 and 2. The citation-retry count says how many requests made two calls. A primary answer of "not answerable" is a decision, not a failure, so it doesn't fail over. Each attempt has its own `llm_generate` and `citation_check` span (`llm.role`, `citation.role`). SPEC: Citation validation updated.
+  - **Why:** the check itself stays strict, so no unverified quote ever reaches a user. Since failures are random per answer, one independent retry should recover most of them.
+  - **Rejected:** loosening the check (ignoring typography or footnote numbers), which weakens SPEC's guarantee; having the model cite sentence numbers and the server copy the text, which removes this failure class but is a bigger redesign (a candidate if the retry isn't enough); and accepting about 90% with a lowered floor.
+- **Finding for later (ingestion):** footnotes extracted mid-sentence also add noise to chunks for retrieval and for the model. Fix it in the parser (detect footnotes by font size or position on the page), then bump the chunker version and re-ingest. It isn't the main cause here: most failures are drift.
+
 ## 2026-11-24: Step 18 eval baseline
 
 - **Judge: DeepSeek V3.2** (`deepseek.v3.2`, in us-east-2; Chetan, 2026-11-24). It's from a different provider than both answering models (Amazon, Qwen) and the question writer (Mistral), so nothing grades its own output or phrasing. It passed the forced tool-call probe on this account, and it costs $0.62 / $1.85 per million tokens (Price List API, us-east-2). Temperature 0, for repeatable verdicts. Rejected: GLM 4.7 (about the same price, no advantage), Kimi K2.5 (pricier output); Anthropic and OpenAI models are refused for this account.

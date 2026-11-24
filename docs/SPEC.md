@@ -457,8 +457,9 @@ LIMIT 30;
 | Query embedding | 2 s, 1 retry | Lexical-only recall | `degraded: ["embedding"]` |
 | Postgres | 2 s statement timeout | 503 with `Retry-After` | none |
 | Reranker | 1.5 s, no retry | Keep RRF order | `degraded: ["reranker"]` |
-| Primary LLM | 10 s (DECISIONS 2026-11-22: both models must fit in API Gateway's 30 s) | Secondary model | `degraded: ["llm_primary"]` |
-| Secondary LLM | 10 s | Abstain | `abstain_reason: "llm_unavailable"` |
+| Primary LLM | 10 s (DECISIONS 2026-11-22: both models must fit in API Gateway's 30 s); an error or unusable output | Secondary model | `degraded: ["llm_primary"]` |
+| Primary LLM's answer fails the citation check | (DECISIONS 2026-11-24, "Citation failure fails over") | Secondary model, once | `degraded: ["citation_retry"]` |
+| Secondary LLM | 10 s | Abstain | `abstain_reason`: `citation_check_failed` if an answer failed the check, else `llm_unavailable` or `llm_output_invalid` |
 
 Circuit breakers open after 5 failures in 30 s and half-open after 30 s. On Lambda they are per instance, not global. That is a documented trade-off, and worth saying out loud in interviews.
 
@@ -489,7 +490,7 @@ Circuit breakers open after 5 failures in 30 s and half-open after 30 s. On Lamb
 2. Every `quote`, after whitespace and case normalization, must be a substring of that chunk's content.
 3. A non-abstained answer needs at least one citation.
 
-Any failure becomes an abstain with `citation_check_failed`. Count these in telemetry; a rising rate means the prompt or model regressed.
+A failure on the primary's answer counts as unusable output, like a malformed response: the secondary model gets its one try (DECISIONS 2026-11-24, "Citation failure fails over"). If the answer that was checked last fails too, the result is an abstain with `citation_check_failed`. Never more than two LLM calls. Count failures in telemetry (the `citation_check` span, per attempt); a rising rate means the prompt or model regressed.
 
 **Cache.** Key = SHA-256 of `tenant_id | role_level | normalized query | tenant epoch | prompt version`. Stored in the unlogged `query_cache` table with a 24-hour TTL. Any activation or delete bumps the epoch, so stale answers can't be served. Only validated, non-degraded answers are cached.
 

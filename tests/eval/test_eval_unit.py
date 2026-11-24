@@ -126,6 +126,7 @@ def summary(**overrides) -> dict:
         "citation_validity": 0.99,
         "abstain_precision": 0.70,
         "judge_coverage": 1.0,
+        "primary_citation_validity": 0.90,
         "degraded": {},
         "answered": 120,
         "llm_failures": 0,
@@ -348,3 +349,23 @@ def test_the_eval_role_may_call_every_model_the_eval_calls():
     )
     primary, secondary = production_llm_ids(PROD_TFVARS.read_text())
     assert {primary, secondary, judge.JUDGE_MODEL_ID} <= listed
+
+
+def test_primary_citation_validity_is_before_the_retry():
+    results = [
+        result("q1", quote_in_context=True, quote_in_recall=True, primary_citation_ok=True),
+        # The primary misquoted, the secondary rescued it: answered, but the primary failed.
+        result("q2", quote_in_context=True, quote_in_recall=True, primary_citation_ok=False),
+        # The primary errored: its answer was never checked, so it doesn't count.
+        result("q3", quote_in_context=True, quote_in_recall=True, primary_citation_ok=None),
+    ]
+    s = metrics.summarize(results)
+    assert s["citation_validity"] == 1.0  # all three reached users with valid citations
+    assert s["primary_citation_validity"] == 0.5
+
+
+def test_a_regression_hidden_by_the_retry_still_fails_the_gate():
+    baseline = summary()
+    # End result unchanged, but the primary misquotes far more often.
+    failures = metrics.gate_failures(summary(primary_citation_validity=0.80), baseline, {})
+    assert len(failures) == 1 and "primary_citation_validity" in failures[0]
