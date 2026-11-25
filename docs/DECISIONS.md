@@ -2,6 +2,58 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-24: Step 21, `DELETE /v1/documents/{id}` and the delete job
+
+- **A delete while a version is being ingested** (Chetan, 2026-11-24): once `deleted_at` is set, no new ingest starts. One already running finishes but never activates, and the purge waits for its lease.
+  - **Claim:** the worker reads the document `FOR SHARE` in the claim's transaction. If `deleted_at` is set, it claims nothing and returns `deleted`. That lock conflicts with the one the API's `UPDATE … SET deleted_at` takes, so a claim and a delete can't interleave: either the claim commits first (and the purge sees its lease) or the delete does (and the claim sees `deleted_at`). Without the lock, a claim could read `deleted_at IS NULL` just as the delete commits.
+  - **Activation** adds `AND deleted_at IS NULL`, so a deleted document never gets an active version. A version that loses this way is marked `failed` with `last_error = 'document_deleted'` and its lease released (fenced by `attempts`). It keeps its rows for the purge and skips the superseded-chunk cleanup. Outcome `deleted`.
+  - **The purge defers while any version has a live lease** (`parsing`/`embedding`, `lease_until > now()`). It raises `PurgeDeferred`, which is transient, so SQS brings the job back after the 30-minute visibility timeout. The worker times out at 300 s and leases last 15 minutes, and no new claim can start, so the second delivery always finds the lease gone.
+  - **An ingest job for a deleted document deletes its file.** A presigned URL stays valid 15 minutes after the delete, so a file can land after the purge. Nothing else would ever remove it.
+  - **Rejected:** purging at once and letting a running worker fail on the foreign key. It's less code, but every collision leaves an error trace and a wasted retry, and a late upload still leaves its file behind.
+- **The endpoint** (`app_api`, scope `documents:write`, the same as registering):
+  - **One transaction:** `UPDATE documents SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, then the epoch bump. RLS limits it to the caller's tenant and role level.
+  - **The job is sent after COMMIT,** with a UUIDv4 `job_id` and the request span's `traceparent`. Before COMMIT, the job could reach the worker first, and the worker would rightly refuse to purge a document that isn't deleted.
+  - **Responses:**
+    - **202**, with `doc_id` and `deleted_at`.
+    - **404** for a document that doesn't exist, belongs to another tenant or is above the caller's role. That's the same response as GET.
+    - **Already deleted: 202 again,** with the original `deleted_at`. The job is sent again with no epoch bump. This makes DELETE idempotent, and it's the recovery path for a lost response or a failed send. Concurrent DELETEs wait on the row lock: one hides the document, and all of them get 202.
+    - **SQS send failed: 503 with `Retry-After: 1`.** The document is already hidden, and retrying the DELETE sends the job.
+  - **Rejected: an outbox table** written in the delete's transaction and drained by a poller. It's another table and another moving part, to cover a failure that a client retry already covers.
+  - **The SQS client** has a 2 s connect timeout, a 3 s read timeout and 2 attempts in all (standard mode), so at most about 10 s. botocore's defaults (60 s) would outlast the Lambda's 29 s. `INGEST_QUEUE_URL` is required at startup.
+- **The purge** (`worker/purge.py`, as `app_ingest`, the tenant from the job):
+  1. **Check, and list the keys:** the document must exist in the job's tenant (else `no_matching_document`) and have `deleted_at` set (else `not_deleted`). Both are permanent, so a message alone never purges a live document. A live lease → `PurgeDeferred`. Then list every version's `s3_key`.
+  2. **Delete each S3 object.** Each key is checked against the layout and the job's tenant and document first (`bad_stored_key`), because the deletes can't be undone. The bucket isn't versioned, so `DeleteObject` removes the object, and deleting a missing key succeeds.
+  3. **One transaction:** `deleted_at IS NOT NULL` is checked again, `active_version` and `title` become NULL, then chunks are deleted, then versions. This runs explicitly rather than through `ON DELETE CASCADE`, so the span can report the counts.
+  - **Why S3 comes before the rows:** the rows are the list of keys. A crash between the steps reruns cleanly, deleting the same (now missing) keys and then the rows. A run after a complete purge finds nothing and returns zeros.
+  - **No epoch bump:** the API already bumped it when it hid the document, and nothing a query can see changes at the purge.
+  - **Telemetry:** a `purge` span with `purge.objects`, `purge.versions` and `purge.chunks`. The handler's outcome is `purged`.
+- **The documents row stays as a tombstone:** `id`, `tenant_id`, `external_id`, `min_role_level`, `deleted_at`.
+  - **Why:** a duplicate delete job, or an ingest job for a late upload, can then tell "deleted" from "never existed". Without it they'd go to the DLQ and fire the alarm, and the late file would stay forever.
+  - **Trade-off:** an `external_id` can't be registered again after a delete (409, `document is deleted`, as before). If that's needed later: a separate deletions table, or an `external_id` rewritten at purge time.
+  - **The title is cleared** because it's a file name, which can say what the document was. The `external_id` stays, because the unique constraint needs it.
+- **Infrastructure** (Chetan applies):
+  - **API role:** `sqs:SendMessage` on the ingest queue.
+  - **API Lambda:** a new `INGEST_QUEUE_URL` environment variable, and the route `DELETE /v1/documents/{id}`.
+  - **Worker role:** `s3:DeleteObject` on `raw/*`.
+  - **No change to `infra/bootstrap`:** the workload boundary already allows both actions. The queue's resource policy only names EventBridge, and that's enough: the API role is in the same account, so its own policy grants the send.
+- **`api.local` has a `--queue-url` flag,** next to `--bucket`. A run against the dev branch must not send delete jobs to production's queue: the worker would find no such document, and that means a DLQ entry and an alarm.
+- **Not done here:**
+  - **The worker doesn't continue the API's trace yet:** the job carries `traceparent`, but the worker starts its own trace.
+  - **The delete-through-cache test** is step 22.
+- **From the code review** (2026-11-24):
+  - **Fixed:**
+    - **A version that lost activation to a delete was left `embedding` with no lease.** Nothing could claim or finish it, which mattered most if the purge later failed. It's now `failed`, `document_deleted`.
+    - **The epoch-bump SQL was copied into the API.** It's now `shared.db.BUMP_EPOCH_SQL`, used by both, so step 22's cache invalidation can't drift between activations and deletes.
+    - **The purge checked each stored key just before deleting it.** It now checks every key first, so a bad row stops the purge with nothing removed.
+    - **Two Terraform comments:** the presign comment had ended up above the new SQS statement, and the queue policy now says that the API role sends through its own IAM policy.
+  - **Kept as is, with reasons:**
+    - **`INGEST_QUEUE_URL` is required, even for `api.local` on the dev branch.** That branch has no queue of its own, but `RAW_BUCKET` is in the same position: the dev branch has no bucket either, so `api.local` was already production-only for uploads. Deletes against the dev branch are tested in the DB tests. A dev queue and worker would be new infrastructure.
+    - **No sweeper for a delete whose job was never sent** (the client got a 503 and didn't retry). The document is hidden, so isolation holds, but its data stays until a DELETE is retried. A sweeper would mean new scheduled compute, and the outbox was rejected above. It's listed as not scheduled; revisit if the step 23 chaos runs show the send failing.
+    - **An ingest job for a deleted document deletes `job.key` with no version row behind it.** The key must match the strict layout, and its tenant and document are confirmed by a tombstone with `deleted_at` set, found under RLS in that tenant. So the only objects this can remove belong to a deleted document, which is what a delete promises anyway. The API sends only `DeleteJob`s it builds itself.
+    - **A deferred purge waits the full 30-minute visibility timeout and costs one receive,** where `ChangeMessageVisibility` could bring it back sooner. A short visibility could defer it several times while a 5-minute ingest runs and use up the 3 receives. With 30 minutes, the second delivery always finds the lease gone. The collision is rare (a delete during the seconds or minutes of an ingest), so an ERROR span on the first try is acceptable.
+    - **A repeated DELETE runs two statements** (an UPDATE that matches nothing, then a SELECT). That's on the rare path, and the comment explains the re-check after the lock wait. Rejected: one `SELECT … FOR UPDATE` followed by a conditional UPDATE, which is the same work in a different order.
+    - **One `DeleteObject` per version instead of `DeleteObjects`:** a document has a handful of versions, and a batch call adds per-key partial failures to handle.
+
 ## 2026-11-24: Step 20, circuit breakers
 
 - **Three breakers, one per dependency** (Chetan, 2026-11-24): the query embedding, the reranker and the primary LLM, in `services/api/breaker.py`. While a breaker is open, its dependency is skipped and the fallback that a failure would reach runs instead, with the same flag: lexical-only recall (`embedding`), RRF order (`reranker`), the secondary model (`llm_primary`). The breaker only decides whether to make the call. The fallbacks and flags are step 14's and 15's, unchanged.

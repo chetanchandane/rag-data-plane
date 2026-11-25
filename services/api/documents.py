@@ -1,24 +1,33 @@
-"""POST /v1/documents and GET /v1/documents/{id} (SPEC: Architecture, "Upload flow").
+"""POST, GET and DELETE /v1/documents (SPEC: Architecture, "Upload flow"; Ingestion,
+"Deletes").
 
 Every query runs as app_api inside rls_transaction() with the caller's claims, so RLS limits
 it to the caller's tenant and role level even where a WHERE clause doesn't say so.
 """
 
+import asyncio
+import logging
+import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
 import asyncpg
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from opentelemetry import propagate, trace
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.auth import Claims, get_claims
-from api.config import MAX_UPLOAD_BYTES, Settings
-from api.deps import get_pool, get_s3, get_settings
+from api.config import MAX_UPLOAD_BYTES, RETRY_AFTER_SECONDS, Settings
+from api.deps import get_pool, get_s3, get_settings, get_sqs
 from api.uploads import presign_upload
-from shared.db import rls_transaction
-from shared.jobs import s3_key_for
+from shared.db import BUMP_EPOCH_SQL, rls_transaction
+from shared.jobs import DeleteJob, s3_key_for
+
+log = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 router = APIRouter()
 
@@ -238,3 +247,96 @@ async def get_document(
         created_at=doc["created_at"],
         versions=[VersionOut(**dict(v)) for v in versions],
     )
+
+
+# --- DELETE /v1/documents/{id} -------------------------------------------------------------
+
+
+class DeleteResponse(BaseModel):
+    doc_id: UUID
+    deleted_at: datetime  # when it was hidden; the purge (chunks, versions, file) follows
+
+
+# Hides the document from every query at once: recall joins on deleted_at IS NULL. RLS
+# limits it to the caller's tenant and role level. deleted_at IS NULL makes only the first
+# delete change anything; a concurrent second one waits on the row lock, then matches nothing.
+_HIDE_DOCUMENT = """
+UPDATE documents SET deleted_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING deleted_at
+"""
+
+
+@router.delete("/v1/documents/{doc_id}", status_code=status.HTTP_202_ACCEPTED)
+async def delete_document(
+    doc_id: UUID,
+    claims: Annotated[Claims, Depends(get_claims)],
+    pool: Annotated[asyncpg.Pool, Depends(get_pool)],
+    sqs: Annotated[object, Depends(get_sqs)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> DeleteResponse:
+    """Hide a document now and queue its purge (DECISIONS 2026-11-24, "Step 21").
+
+    202: hidden, purge queued. Also 202 for a document that is already deleted: the purge
+         job is sent again, so a client whose first DELETE lost its response (or got a 503)
+         can simply retry. The purge is idempotent.
+    404: no such document, another tenant's, or above the caller's role level (RLS makes
+         them look the same, as on GET).
+    503: hidden, but the purge job couldn't be queued. Retry the DELETE.
+    """
+    with tracer.start_as_current_span("delete_document") as span:
+        span.set_attribute("document.doc_id", str(doc_id))
+        async with (
+            pool.acquire() as conn,
+            rls_transaction(conn, claims.tenant_id, claims.role_level),
+        ):
+            deleted_at = await conn.fetchval(_HIDE_DOCUMENT, doc_id)
+            already_deleted = deleted_at is None
+            if not already_deleted:
+                # Same transaction: no answer cached before the delete is served after it.
+                await conn.execute(BUMP_EPOCH_SQL, claims.tenant_id)
+            else:
+                # Already deleted (and visible to this caller), or not visible at all.
+                deleted_at = await conn.fetchval(
+                    "SELECT deleted_at FROM documents WHERE id = $1", doc_id
+                )
+                if deleted_at is None:
+                    raise HTTPException(status.HTTP_404_NOT_FOUND, "document not found")
+        span.set_attribute("document.already_deleted", already_deleted)
+
+        # After COMMIT: the worker refuses to purge a document whose deleted_at isn't set, so
+        # a job sent before the commit could arrive first and be rejected.
+        job = DeleteJob(
+            schema_version=1,
+            job_id=str(uuid.uuid4()),
+            job_type="delete",
+            source="api",
+            emitted_at=datetime.now(UTC),
+            tenant_id=claims.tenant_id,
+            doc_id=doc_id,
+            traceparent=_traceparent(),
+        )
+        try:
+            await asyncio.to_thread(
+                sqs.send_message,  # type: ignore[attr-defined]
+                QueueUrl=settings.ingest_queue_url,
+                MessageBody=job.model_dump_json(),
+            )
+        except (BotoCoreError, ClientError) as exc:
+            log.warning("delete job for %s not queued: %s", doc_id, type(exc).__name__)
+            span.set_attribute("document.purge_queued", False)
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "document hidden, but its purge couldn't be queued; retry the DELETE",
+                headers={"Retry-After": str(RETRY_AFTER_SECONDS)},
+            ) from exc
+        span.set_attribute("document.purge_queued", True)
+    return DeleteResponse(doc_id=doc_id, deleted_at=deleted_at)
+
+
+def _traceparent() -> str | None:
+    """The current span's W3C traceparent, so the job's trace can be tied to this request.
+    None when tracing is off."""
+    carrier: dict[str, str] = {}
+    propagate.inject(carrier)
+    return carrier.get("traceparent")

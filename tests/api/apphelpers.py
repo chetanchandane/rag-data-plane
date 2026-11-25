@@ -16,6 +16,7 @@ from typing import Any
 import boto3
 import httpx
 import jwt
+from botocore.exceptions import EndpointConnectionError
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 
@@ -29,6 +30,7 @@ from shared import tokens
 ISSUER = "https://d111111abcdef8.cloudfront.net"
 JWKS_URI = f"{ISSUER}/.well-known/jwks.json"
 BUCKET = "ragdp-raw-test"
+QUEUE_URL = "https://sqs.us-east-2.amazonaws.com/123456789012/ragdp-ingest-test"
 REGION = "us-east-2"
 MODEL_ID = "amazon.titan-embed-text-v2:0"
 RERANK_MODEL_ID = "rerank-v5.0-fast"
@@ -47,6 +49,7 @@ def make_settings(**overrides: Any) -> Settings:
         "rerank_model_id": RERANK_MODEL_ID,
         "llm_primary_model_id": PRIMARY_LLM,
         "llm_secondary_model_id": SECONDARY_LLM,
+        "ingest_queue_url": QUEUE_URL,
         "jwt_issuer": ISSUER,
     }
     return Settings(**(values | overrides))
@@ -79,6 +82,21 @@ def fake_s3():
         region_name=REGION,
     )
     return make_s3_client(REGION, session=session)
+
+
+class FakeSqs:
+    """Records send_message calls. fail=True raises the way botocore does when SQS can't be
+    reached."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.fail = fail
+
+    def send_message(self, **kwargs: Any) -> dict[str, str]:
+        if self.fail:
+            raise EndpointConnectionError(endpoint_url=QUEUE_URL)
+        self.sent.append(kwargs)
+        return {"MessageId": f"m-{len(self.sent)}"}
 
 
 # --- tokens ------------------------------------------------------------------------------
@@ -127,6 +145,7 @@ def build_app(pool, tenant_id: uuid.UUID, role_level: int) -> FastAPI:
     app.state.settings = make_settings()
     app.state.pool = pool
     app.state.s3 = fake_s3()
+    app.state.sqs = FakeSqs()
     app.state.embed_query = no_embedding
     app.state.reranker = None
     app.state.generate = no_llm

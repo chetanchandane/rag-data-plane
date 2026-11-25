@@ -1,7 +1,7 @@
 """Unit tests for the SQS handler's decisions: process, dead-letter, or raise for a retry.
 
-No AWS, no database: ingest and the DLQ are fakes passed to process_message(). Spans go to
-the in-memory exporter (tests/conftest.py).
+No AWS, no database: ingest, the purge and the DLQ are fakes passed to process_message().
+Spans go to the in-memory exporter (tests/conftest.py).
 """
 
 import json
@@ -13,10 +13,12 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import StatusCode
 
 from shared.errors import PermanentError
-from shared.jobs import IngestFileJob
+from shared.jobs import DeleteJob, IngestFileJob
 from worker import handler as handler_module
 from worker.handler import process_message
 from worker.pipeline import IngestResult
+from worker.purge import PurgeResult
+from worker.store import PurgeDeferred
 
 RAW_BUCKET = "ragdp-raw-prod-123456789012"
 KEY = f"raw/{uuid.uuid4()}/{uuid.uuid4()}/v1/source.pdf"
@@ -62,8 +64,40 @@ class FakeIngest:
         return IngestResult(outcome="indexed", chunk_count=3, embedded_now=3)
 
 
-async def run(body: str, ingest: FakeIngest, dlq: FakeDlq) -> str:
-    return await process_message(body, raw_bucket=RAW_BUCKET, run_ingest=ingest, send_to_dlq=dlq)
+class FakePurge:
+    def __init__(self, raises: Exception | None = None) -> None:
+        self.jobs: list[DeleteJob] = []
+        self.raises = raises
+
+    async def __call__(self, job: DeleteJob) -> PurgeResult:
+        self.jobs.append(job)
+        if self.raises:
+            raise self.raises
+        return PurgeResult(objects=2, versions=2, chunks=9)
+
+
+async def run(body: str, ingest: FakeIngest, dlq: FakeDlq, purge: FakePurge | None = None) -> str:
+    return await process_message(
+        body,
+        raw_bucket=RAW_BUCKET,
+        run_ingest=ingest,
+        run_purge=purge or FakePurge(),
+        send_to_dlq=dlq,
+    )
+
+
+def api_message(job_type: str, **overrides: object) -> str:
+    body = {
+        "schema_version": 1,
+        "job_id": "api-1",
+        "job_type": job_type,
+        "source": "api",
+        "tenant_id": str(uuid.uuid4()),
+        "doc_id": str(uuid.uuid4()),
+        "emitted_at": "2026-11-24T12:00:00Z",
+    }
+    body.update(overrides)
+    return json.dumps(body)
 
 
 async def test_a_valid_job_is_ingested() -> None:
@@ -107,21 +141,41 @@ async def test_a_job_for_another_bucket_goes_to_the_dlq() -> None:
     assert dlq.sent[0][1].startswith("wrong_bucket: ")
 
 
-async def test_job_types_without_a_handler_yet_go_to_the_dlq() -> None:
-    body = json.dumps(
-        {
-            "schema_version": 1,
-            "job_id": "api-1",
-            "job_type": "delete",
-            "source": "api",
-            "tenant_id": str(uuid.uuid4()),
-            "doc_id": str(uuid.uuid4()),
-            "emitted_at": "2026-11-19T12:00:00Z",
-        }
-    )
-    ingest, dlq = FakeIngest(), FakeDlq()
-    assert await run(body, ingest, dlq) == "dead_lettered"
+async def test_reindex_jobs_have_no_handler_yet_and_go_to_the_dlq() -> None:
+    ingest, dlq, purge = FakeIngest(), FakeDlq(), FakePurge()
+    assert await run(api_message("reindex", version=1), ingest, dlq, purge) == "dead_lettered"
     assert dlq.sent[0][1].startswith("unsupported_job_type: ")
+    assert ingest.jobs == [] and purge.jobs == []
+
+
+# --- delete jobs ---------------------------------------------------------------------------
+
+
+async def test_a_delete_job_runs_the_purge() -> None:
+    body = api_message("delete")
+    ingest, dlq, purge = FakeIngest(), FakeDlq(), FakePurge()
+    assert await run(body, ingest, dlq, purge) == "purged"
+    [job] = purge.jobs
+    assert str(job.doc_id) == json.loads(body)["doc_id"]
+    assert str(job.tenant_id) == json.loads(body)["tenant_id"]
+    assert ingest.jobs == [] and dlq.sent == []
+
+
+async def test_a_permanent_purge_error_goes_to_the_dlq() -> None:
+    # e.g. a delete job for a document that isn't deleted: never purged, kept for a look.
+    body = api_message("delete")
+    purge = FakePurge(raises=PermanentError("not_deleted", "refusing to purge"))
+    dlq = FakeDlq()
+    assert await run(body, FakeIngest(), dlq, purge) == "dead_lettered"
+    assert dlq.sent == [(body, "not_deleted: refusing to purge")]
+
+
+async def test_a_deferred_purge_is_raised_for_sqs_to_bring_back() -> None:
+    purge = FakePurge(raises=PurgeDeferred("1 version still being ingested"))
+    dlq = FakeDlq()
+    with pytest.raises(PurgeDeferred):
+        await run(api_message("delete"), FakeIngest(), dlq, purge)
+    assert dlq.sent == []
 
 
 async def test_a_permanent_ingest_error_goes_to_the_dlq_with_its_reason() -> None:

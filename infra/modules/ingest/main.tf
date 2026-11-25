@@ -86,6 +86,8 @@ data "aws_iam_policy_document" "ingest_queue" {
       identifiers = ["events.amazonaws.com"]
     }
     # Only this rule (confused-deputy protection): no other rule, in any account, can write here.
+    # The one other producer, the API role (delete jobs, step 21), is in this account and is
+    # allowed by its own IAM policy, so it needs no statement here.
     condition {
       test     = "ArnEquals"
       variable = "aws:SourceArn"
@@ -176,6 +178,15 @@ data "aws_iam_policy_document" "worker" {
   statement {
     sid       = "ReadRawFiles"
     actions   = ["s3:GetObject"]
+    resources = ["${var.raw_bucket_arn}/raw/*"]
+  }
+
+  # The delete job removes a deleted document's files, and an ingest job for a deleted
+  # document removes a file uploaded after the purge (step 21). The bucket isn't versioned,
+  # so DeleteObject removes the object itself.
+  statement {
+    sid       = "DeleteRawFilesOfDeletedDocuments"
+    actions   = ["s3:DeleteObject"]
     resources = ["${var.raw_bucket_arn}/raw/*"]
   }
 

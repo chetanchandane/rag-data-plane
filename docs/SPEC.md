@@ -315,7 +315,7 @@ One JSON shape on the queue, from two producers: the EventBridge rule (uploads) 
 
 **Worker steps**
 
-1. **Claim** with a lease. Zero rows back means one of two things. If the version exists with this `s3_key` but is done, superseded or held by another worker: delete the message and exit cleanly. If no version matches this `doc_id`, `version` and `s3_key`: that is a permanent error (see "Failure handling"), and no row is touched.
+1. **Claim** with a lease. Zero rows back means one of two things. If the version exists with this `s3_key` but is done, superseded or held by another worker: delete the message and exit cleanly. If no version matches this `doc_id`, `version` and `s3_key`: that is a permanent error (see "Failure handling"), and no row is touched. Before the claim, in the same transaction, the worker reads the document `FOR SHARE`. If `deleted_at` is set, it claims nothing, deletes the uploaded file and exits cleanly, even when the versions are already purged (see "Deletes").
 
 ```sql
 UPDATE document_versions
@@ -339,8 +339,10 @@ BEGIN;
 SELECT set_config('app.tenant_id', $tenant, true);
 
 UPDATE documents SET active_version = $2
-WHERE id = $1 AND (active_version IS NULL OR active_version < $2)
-RETURNING id;   -- no row back: a newer version is live. ROLLBACK, mark this version superseded, stop.
+WHERE id = $1 AND deleted_at IS NULL AND (active_version IS NULL OR active_version < $2)
+RETURNING id;   -- no row back: a newer version is live (ROLLBACK, mark this version superseded,
+                -- stop) or the document is deleted (mark it failed: document_deleted, release the
+                -- lease, leave the rows to the purge, stop).
 
 UPDATE document_versions
 SET status = CASE WHEN version = $2 THEN 'indexed' ELSE 'superseded' END,
@@ -360,8 +362,8 @@ Errors are permanent or transient. Anything not listed as permanent is transient
 
 | Kind | Cases | What the worker does |
 | --- | --- | --- |
-| Permanent | Invalid message (`ValidationError`, which includes an S3 job that sets identity fields); a key that matches no stored version; sha256 mismatch; unparseable PDF | No retries. In order: mark the version `failed` with `last_error` (only if this worker claimed it), send the original message to the DLQ with the reason as a message attribute, then return success so Lambda deletes it from the source queue. If the DLQ send fails, raise, so SQS retries and nothing is lost |
-| Transient | Bedrock 429/5xx; DB timeout or connection error; network errors; anything unclassified | If claimed, record `status = 'failed'` and `last_error`. Then raise, so SQS redelivers up to `maxReceiveCount` = 3, after which SQS moves the message to the DLQ |
+| Permanent | Invalid message (`ValidationError`, which includes an S3 job that sets identity fields); a key that matches no stored version; sha256 mismatch; unparseable PDF; a delete job for a document that doesn't exist in its tenant or isn't deleted | No retries. In order: mark the version `failed` with `last_error` (only if this worker claimed it), send the original message to the DLQ with the reason as a message attribute, then return success so Lambda deletes it from the source queue. If the DLQ send fails, raise, so SQS retries and nothing is lost |
+| Transient | Bedrock 429/5xx; DB timeout or connection error; network errors; a delete job deferred by a live lease; anything unclassified | If claimed, record `status = 'failed'` and `last_error`. Then raise, so SQS redelivers up to `maxReceiveCount` = 3, after which SQS moves the message to the DLQ |
 
 - **Mark a version `failed` only after a successful claim.** Without a claim (invalid message, key that matches no stored version), send to the DLQ and touch no rows. Otherwise a forged message could flip someone's legitimate version to `failed`.
 - **"No retries" means the worker does not ask SQS to redeliver.** A `failed` version with `attempts < 3` can still be re-claimed by a duplicate delivery or a manual redrive, so a redrive after a parser fix works.
@@ -383,6 +385,17 @@ Errors are permanent or transient. Anything not listed as permanent is transient
 **Deletes**
 
 `DELETE /v1/documents/{id}` sets `deleted_at` and bumps the tenant epoch in one transaction, so the document disappears from queries immediately (recall filters on `deleted_at IS NULL`). It then enqueues a `delete` job, which clears `active_version` and removes chunks, versions and S3 objects. The API cannot touch `active_version` (column-level grant). Test that a deleted document never shows up in a query, including through the cache.
+
+Details (DECISIONS 2026-11-24, "Step 21"):
+
+- **The endpoint returns 202.** The job is sent after COMMIT. A document the caller can't see gets 404, as on GET. An already deleted document gets 202 again and its job is sent again, with no new epoch bump, so a lost response or a failed send is fixed by retrying. A failed send gets 503 with `Retry-After`; the document is already hidden.
+- **The delete job** (`app_ingest`, the job's tenant):
+  1. **Check:** the document must exist and be deleted (else permanent: a message never purges a live document). A live lease on any version is transient: SQS brings the job back after the visibility timeout.
+  2. **Delete each version's S3 object.**
+  3. **One transaction:** clear `active_version` and `title`, delete chunks, then versions.
+  - **Each step is idempotent,** so a duplicate or a crash halfway is safe.
+- **The documents row stays as a tombstone** (`id`, `external_id`, `deleted_at`), so a duplicate or late message can tell "deleted" from "never existed". The `external_id` can't be registered again.
+- **A delete while a version is being ingested:** once `deleted_at` is set, no claim succeeds (the claim's `FOR SHARE` serializes it with the delete). A version claimed earlier finishes but never activates. An ingest job for a deleted document deletes its file, which covers an upload that lands after the purge.
 
 ## Query path
 

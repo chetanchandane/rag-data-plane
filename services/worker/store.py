@@ -12,11 +12,12 @@ instead of overwriting the newer attempt.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 from uuid import UUID
 
 import asyncpg
 
-from shared.db import WORKER_STATEMENT_TIMEOUT_MS, rls_transaction
+from shared.db import BUMP_EPOCH_SQL, WORKER_STATEMENT_TIMEOUT_MS, rls_transaction
 from shared.errors import MAX_REASON_LENGTH, PermanentError
 from shared.jobs import S3KeyParts
 from worker.chunking import Chunk
@@ -40,6 +41,20 @@ class LeaseLostError(Exception):
     """Another worker re-claimed this version. Transient: stop and let SQS decide."""
 
 
+class DocumentDeleted(Exception):
+    """Not a failure: the version's document is deleted, so it must not be ingested. The
+    caller removes the uploaded file (it may have landed after the purge) and skips."""
+
+
+class PurgeDeferred(Exception):
+    """Transient: a worker holds a live lease on one of the document's versions. SQS brings
+    the delete job back after the visibility timeout (30 min), when the lease is gone
+    (DECISIONS 2026-11-24, "Step 21")."""
+
+
+Activation = Literal["activated", "superseded", "deleted"]
+
+
 def _tx(conn: asyncpg.Connection, tenant_id: UUID):
     return rls_transaction(conn, tenant_id, None, statement_timeout_ms=WORKER_STATEMENT_TIMEOUT_MS)
 
@@ -60,10 +75,23 @@ async def claim(conn: asyncpg.Connection, parts: S3KeyParts, s3_key: str) -> Cla
 
     Returns the Claim, or None if the version exists but is done, superseded or held by
     another worker (the caller deletes the message and exits cleanly).
+    Raises DocumentDeleted if the document is deleted, whether or not its versions are
+    already purged.
     Raises PermanentError if no version matches this doc_id, version and s3_key. The key's
     tenant/doc/version are only a claim until a stored row with the same s3_key confirms them.
     """
     async with _tx(conn, parts.tenant_id):
+        # FOR SHARE conflicts with the lock DELETE /v1/documents takes to set deleted_at, so
+        # a claim and a delete never overlap: either this claim commits first (and the purge
+        # sees its lease) or the delete does (and this sees deleted_at).
+        doc = await conn.fetchrow(
+            "SELECT deleted_at, min_role_level FROM documents WHERE id = $1 FOR SHARE",
+            parts.doc_id,
+        )
+        if doc is not None and doc["deleted_at"] is not None:
+            raise DocumentDeleted(f"{parts.doc_id} is deleted")
+        # No document: no version can match either (foreign key), so this falls through to
+        # no_matching_version below.
         row = await conn.fetchrow(_CLAIM, parts.doc_id, parts.version, s3_key)
         if row is None:
             status = await conn.fetchval(
@@ -76,16 +104,13 @@ async def claim(conn: asyncpg.Connection, parts: S3KeyParts, s3_key: str) -> Cla
             if status is None:
                 raise PermanentError("no_matching_version", "key matches no registered version")
             return None
-        min_role_level = await conn.fetchval(
-            "SELECT min_role_level FROM documents WHERE id = $1", parts.doc_id
-        )
     return Claim(
         tenant_id=parts.tenant_id,
         doc_id=parts.doc_id,
         version=parts.version,
         attempts=row["attempts"],
         sha256=row["sha256"],
-        min_role_level=min_role_level,
+        min_role_level=doc["min_role_level"],
         parser=row["parser"],
         chunker_version=row["chunker_version"],
     )
@@ -179,23 +204,42 @@ async def insert_chunks(
         )
 
 
-async def activate(conn: asyncpg.Connection, claim: Claim) -> bool:
+async def activate(conn: asyncpg.Connection, claim: Claim) -> Activation:
     """Make this version the live one, forward only (SPEC SQL). One transaction.
 
-    Returns True if activated. Returns False if a newer version is already live: this
-    version is then marked superseded instead.
+    "activated": this version is live.
+    "superseded": a newer version is already live; this one is marked superseded instead.
+    "deleted": the document was deleted while this version was being ingested. A deleted
+               document never gets an active version. The version is marked failed with
+               last_error 'document_deleted' and its lease released: a terminal state
+               (nothing claims a deleted document's version) that says why, rather than
+               'embedding' with no lease, even if the purge later fails.
     """
     async with _tx(conn, claim.tenant_id):
         activated = await conn.fetchval(
             """
             UPDATE documents SET active_version = $2
-            WHERE id = $1 AND (active_version IS NULL OR active_version < $2)
+            WHERE id = $1 AND deleted_at IS NULL
+              AND (active_version IS NULL OR active_version < $2)
             RETURNING id
             """,
             claim.doc_id,
             claim.version,
         )
         if activated is None:
+            deleted_at = await conn.fetchval(
+                "SELECT deleted_at FROM documents WHERE id = $1", claim.doc_id
+            )
+            if deleted_at is not None:
+                await conn.execute(
+                    "UPDATE document_versions"
+                    " SET status = 'failed', last_error = 'document_deleted', lease_until = NULL"
+                    " WHERE doc_id = $1 AND version = $2 AND attempts = $3",
+                    claim.doc_id,
+                    claim.version,
+                    claim.attempts,
+                )
+                return "deleted"
             # Nothing has changed in this transaction yet, so marking superseded here is
             # the same as the SPEC's "ROLLBACK, mark this version superseded".
             await conn.execute(
@@ -204,7 +248,7 @@ async def activate(conn: asyncpg.Connection, claim: Claim) -> bool:
                 claim.doc_id,
                 claim.version,
             )
-            return False
+            return "superseded"
         await conn.execute(
             """
             UPDATE document_versions
@@ -218,14 +262,8 @@ async def activate(conn: asyncpg.Connection, claim: Claim) -> bool:
             claim.version,
         )
         # The epoch is part of the query cache key: bumping it invalidates cached answers.
-        await conn.execute(
-            """
-            INSERT INTO tenant_index_state (tenant_id, epoch) VALUES ($1, 1)
-            ON CONFLICT (tenant_id) DO UPDATE SET epoch = tenant_index_state.epoch + 1
-            """,
-            claim.tenant_id,
-        )
-    return True
+        await conn.execute(BUMP_EPOCH_SQL, claim.tenant_id)
+    return "activated"
 
 
 async def cleanup_superseded(conn: asyncpg.Connection, claim: Claim) -> int:
@@ -262,3 +300,67 @@ async def mark_failed(conn: asyncpg.Connection, claim: Claim, reason: str) -> bo
             reason[:MAX_REASON_LENGTH],
         )
     return updated is not None
+
+
+# --- Delete job (SPEC: Ingestion, "Deletes") ------------------------------------------------
+
+
+async def purge_targets(conn: asyncpg.Connection, tenant_id: UUID, doc_id: UUID) -> list[str]:
+    """Check a delete job against the database and return the s3_keys of every version.
+
+    Raises PermanentError if the document doesn't exist in this tenant, or isn't deleted: a
+    message alone never purges a live document. Raises PurgeDeferred if a worker holds a
+    live lease on one of its versions.
+
+    The list can't grow after this: once deleted_at is set, the API registers no new
+    versions and the worker claims none (claim() raises DocumentDeleted).
+    """
+    async with _tx(conn, tenant_id):
+        doc = await conn.fetchrow("SELECT deleted_at FROM documents WHERE id = $1", doc_id)
+        if doc is None:
+            raise PermanentError("no_matching_document", "no such document in this tenant")
+        if doc["deleted_at"] is None:
+            raise PermanentError("not_deleted", "refusing to purge a document that isn't deleted")
+        leased = await conn.fetchval(
+            """
+            SELECT count(*) FROM document_versions
+            WHERE doc_id = $1 AND status IN ('parsing', 'embedding') AND lease_until > now()
+            """,
+            doc_id,
+        )
+        if leased:
+            raise PurgeDeferred(f"{leased} version(s) of {doc_id} still being ingested")
+        rows = await conn.fetch(
+            "SELECT s3_key FROM document_versions WHERE doc_id = $1 ORDER BY version", doc_id
+        )
+    return [row["s3_key"] for row in rows]
+
+
+@dataclass(frozen=True)
+class PurgedRows:
+    versions: int
+    chunks: int
+
+
+async def purge_rows(conn: asyncpg.Connection, tenant_id: UUID, doc_id: UUID) -> PurgedRows:
+    """Remove a deleted document's chunks and versions, in one transaction, and leave the
+    documents row as a tombstone: id, external_id and deleted_at stay, so a duplicate or
+    late message can tell "deleted" from "never existed". The title (a file name) goes.
+    Running it again removes nothing and returns zeros."""
+    async with _tx(conn, tenant_id):
+        # deleted_at is checked again in this transaction: it is what makes the purge safe.
+        tombstone = await conn.fetchval(
+            """
+            UPDATE documents SET active_version = NULL, title = NULL
+            WHERE id = $1 AND deleted_at IS NOT NULL
+            RETURNING id
+            """,
+            doc_id,
+        )
+        if tombstone is None:
+            raise PermanentError("not_deleted", "refusing to purge a document that isn't deleted")
+        # Explicit, child first, rather than relying on ON DELETE CASCADE: the counts are
+        # what the span reports.
+        chunks = await conn.execute("DELETE FROM chunks WHERE doc_id = $1", doc_id)
+        versions = await conn.execute("DELETE FROM document_versions WHERE doc_id = $1", doc_id)
+    return PurgedRows(versions=int(versions.split()[-1]), chunks=int(chunks.split()[-1]))

@@ -37,8 +37,10 @@ locals {
     "GET /v1/whoami"         = []
     "POST /v1/documents"     = ["documents:write"]
     "GET /v1/documents/{id}" = ["documents:read"]
-    "POST /v1/retrieve"      = ["retrieve"] # its own scope: /v1/query spends LLM money
-    "POST /v1/query"         = ["query"]
+    # Deleting is writing: the same scope as registering (step 21).
+    "DELETE /v1/documents/{id}" = ["documents:write"]
+    "POST /v1/retrieve"         = ["retrieve"] # its own scope: /v1/query spends LLM money
+    "POST /v1/query"            = ["query"]
   }
 }
 
@@ -172,6 +174,13 @@ data "aws_iam_policy_document" "api" {
     resources = [var.cohere_api_key_param_arn]
   }
 
+  # DELETE /v1/documents queues the purge on the worker's queue (step 21). Send only.
+  statement {
+    sid       = "SendDeleteJobs"
+    actions   = ["sqs:SendMessage"]
+    resources = [var.ingest_queue_arn]
+  }
+
   # Presigned upload URLs are signed with this role's credentials, so S3 checks this
   # permission when the client uploads. Uploads go under raw/ only.
   statement {
@@ -215,6 +224,7 @@ resource "aws_lambda_function" "api" {
   environment {
     variables = {
       RAW_BUCKET              = var.raw_bucket_name
+      INGEST_QUEUE_URL        = var.ingest_queue_url
       DATABASE_URL_API_PARAM  = var.database_url_param_name
       EMBEDDING_MODEL_ID      = var.embedding_model_id
       HONEYCOMB_API_KEY_PARAM = var.honeycomb_api_key_param_name

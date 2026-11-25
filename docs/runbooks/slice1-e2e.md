@@ -36,7 +36,8 @@ retoken
 
 # The API, in the background, on 127.0.0.1:8000, against production.
 uv run python -m api.local \
-  --database-url-param /ragdp/prod/database_url_api --bucket "$BUCKET" > /tmp/ragdp-api.log 2>&1 &
+  --database-url-param /ragdp/prod/database_url_api --bucket "$BUCKET" --queue-url "$QUEUE" \
+  > /tmp/ragdp-api.log 2>&1 &
 
 # Helpers. register <file> <external_id> prints the API's JSON response.
 api() { curl -sS -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' "$@"; }

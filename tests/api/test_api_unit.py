@@ -130,6 +130,7 @@ def test_s3_key_for_round_trips_through_the_workers_parser():
 _ENV = {
     "DATABASE_URL_API": "postgresql://app_api@host/db",
     "RAW_BUCKET": BUCKET,
+    "INGEST_QUEUE_URL": "https://sqs.us-east-2.amazonaws.com/123456789012/ragdp-ingest",
     "AWS_REGION": "us-east-2",
     "EMBEDDING_MODEL_ID": "amazon.titan-embed-text-v2:0",
     "RERANK_MODEL_ID": "rerank-v5.0-fast",
@@ -165,6 +166,15 @@ def test_settings_read_from_the_environment(monkeypatch):
     assert settings.database_url == _ENV["DATABASE_URL_API"]
     assert ssm.calls == []  # a URL in the environment never touches SSM
     assert settings.jwt_issuer == "https://d111111abcdef8.cloudfront.net"
+    assert settings.ingest_queue_url == _ENV["INGEST_QUEUE_URL"]
+
+
+def test_the_ingest_queue_is_required(monkeypatch):
+    # Without it DELETE could hide a document but never queue its purge: fail at startup.
+    _set_env(monkeypatch, _ENV)
+    monkeypatch.delenv("INGEST_QUEUE_URL")
+    with pytest.raises(RuntimeError, match="INGEST_QUEUE_URL is not set"):
+        Settings.from_env(ssm=FakeSsm())
 
 
 def test_jwt_issuer_is_optional_for_lambda(monkeypatch):

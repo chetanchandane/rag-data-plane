@@ -22,5 +22,9 @@ def get_s3(request: Request):
     return request.app.state.s3
 
 
+def get_sqs(request: Request):
+    return request.app.state.sqs
+
+
 def get_breakers(request: Request) -> Breakers:
     return request.app.state.breakers

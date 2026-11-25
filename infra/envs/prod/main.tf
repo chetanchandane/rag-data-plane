@@ -82,6 +82,8 @@ module "api" {
   api_image_tag           = var.api_image_tag
   raw_bucket_name         = module.storage.bucket_name
   raw_bucket_arn          = module.storage.bucket_arn
+  ingest_queue_url        = module.ingest.queue_url # delete jobs (step 21)
+  ingest_queue_arn        = module.ingest.queue_arn
   database_url_param_name = module.secrets.names.database_url_api
   database_url_param_arn  = module.secrets.arns.database_url_api
   jwt_issuer              = module.issuer.issuer_url

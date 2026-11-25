@@ -36,12 +36,13 @@ tracer = trace.get_tracer(__name__)
 EMBED_BATCH_SIZE = 32
 
 LoadSource = Callable[[], bytes]
+DeleteSource = Callable[[], None]
 Embed = Callable[[list[str]], list[list[float]]]
 
 
 @dataclass
 class IngestResult:
-    outcome: Literal["indexed", "superseded", "skipped"]
+    outcome: Literal["indexed", "superseded", "skipped", "deleted"]
     chunk_count: int = 0
     embedded_now: int = 0  # chunks embedded in this run (fewer than chunk_count on a resume)
     seconds: dict[str, float] = field(default_factory=dict)  # per stage
@@ -66,8 +67,14 @@ async def ingest_version(
     load_source: LoadSource,
     embed: Embed,
     embedding_model: str,
+    delete_source: DeleteSource | None = None,
 ) -> IngestResult:
-    """Claim, verify, parse, chunk, embed, insert and activate one version."""
+    """Claim, verify, parse, chunk, embed, insert and activate one version.
+
+    delete_source removes the uploaded file. It's called only when the document is deleted:
+    the file may have been uploaded after the purge ran (a presigned URL lives 15 minutes),
+    and nothing else would ever remove it. None where there is no stored file (local runs).
+    """
     try:
         parts = parse_s3_key(s3_key)
     except ValueError as exc:
@@ -82,10 +89,21 @@ async def ingest_version(
         }
     )
     seconds: dict[str, float] = {}
+    deleted = False
     with _stage(seconds, "claim") as span:
-        async with pool.acquire() as conn:
-            claim = await store.claim(conn, parts, s3_key)
-        span.set_attribute("ingest.claimed", claim is not None)
+        try:
+            async with pool.acquire() as conn:
+                claim = await store.claim(conn, parts, s3_key)
+        except store.DocumentDeleted:
+            claim, deleted = None, True
+        span.set_attributes(
+            {"ingest.claimed": claim is not None, "ingest.document_deleted": deleted}
+        )
+    if deleted:
+        log.info("document %s is deleted: not ingesting v%s", parts.doc_id, parts.version)
+        if delete_source is not None:
+            await asyncio.to_thread(delete_source)
+        return IngestResult(outcome="deleted")
     if claim is None:
         log.info("version %s v%s is done or held by another worker", parts.doc_id, parts.version)
         return IngestResult(outcome="skipped")
@@ -154,12 +172,15 @@ async def _process(
 
     with _stage(seconds, "activate") as span:
         async with pool.acquire() as conn:
-            activated = await store.activate(conn, claim)
-            await store.cleanup_superseded(conn, claim)
-        span.set_attribute("ingest.activated", activated)
+            activation = await store.activate(conn, claim)
+            if activation != "deleted":  # a deleted document's chunks are the purge's job
+                await store.cleanup_superseded(conn, claim)
+        span.set_attribute("ingest.activated", activation == "activated")
+        span.set_attribute("ingest.activation", activation)
 
+    outcomes = {"activated": "indexed", "superseded": "superseded", "deleted": "deleted"}
     return IngestResult(
-        outcome="indexed" if activated else "superseded",
+        outcome=outcomes[activation],
         chunk_count=len(chunks),
         embedded_now=len(missing),
         seconds=seconds,

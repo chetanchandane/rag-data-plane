@@ -39,6 +39,15 @@ _SET_CONTEXT_WITHOUT_ROLE = """
 """
 
 
+# The tenant epoch is part of the query cache key (step 22). Every change to what a tenant's
+# queries can see bumps it in the same transaction: an activation (worker) and a delete (API).
+# One statement for both, so they can't drift apart.
+BUMP_EPOCH_SQL = """
+INSERT INTO tenant_index_state (tenant_id, epoch) VALUES ($1, 1)
+ON CONFLICT (tenant_id) DO UPDATE SET epoch = tenant_index_state.epoch + 1
+"""
+
+
 async def _init_connection(conn: asyncpg.Connection) -> None:
     """Runs once for every new connection the pool opens."""
     # Refuse to run as anything that might bypass RLS (e.g. a DSN pasted with the owner role).

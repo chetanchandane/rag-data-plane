@@ -17,6 +17,8 @@ import boto3
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 # How long a presigned upload URL stays valid.
 UPLOAD_URL_EXPIRES_SECONDS = 15 * 60
+# The Retry-After a 503 carries (a database or queue that's briefly unavailable).
+RETRY_AFTER_SECONDS = 1
 
 # /v1/query defaults (DECISIONS 2026-11-22, "Step 15"). Both are tuned on the golden set.
 DEFAULT_ABSTAIN_THRESHOLD = 0.3  # the top rerank score below which the API abstains
@@ -36,6 +38,8 @@ class Settings:
     # Bedrock inference profile IDs (us.*), called through the Converse API.
     llm_primary_model_id: str
     llm_secondary_model_id: str
+    # The ingest queue: DELETE /v1/documents sends the purge job here (the worker's queue).
+    ingest_queue_url: str
     # Claude's effort level. Sent only to Anthropic models (api/llm.py).
     llm_primary_effort: str = "low"
     abstain_threshold: float = DEFAULT_ABSTAIN_THRESHOLD
@@ -56,6 +60,7 @@ class Settings:
             rerank_model_id=_required("RERANK_MODEL_ID"),
             llm_primary_model_id=_required("LLM_PRIMARY_MODEL_ID"),
             llm_secondary_model_id=_required("LLM_SECONDARY_MODEL_ID"),
+            ingest_queue_url=_required("INGEST_QUEUE_URL"),
             llm_primary_effort=_effort(),
             abstain_threshold=_threshold(),
             llm_context_chunks=_context_chunks(),

@@ -1,7 +1,8 @@
 """SQS entry point of the ingest worker Lambda (SPEC: Ingestion, "Failure handling").
 
 Thin on purpose: it turns one queue message into one ingest_version() call (the same function
-the local runner uses) and decides what a failure means for the message:
+the local runner uses), or one purge_document() call for a delete job, and decides what a
+failure means for the message:
 
   Permanent error -> mark the version failed (ingest_version does this if it had claimed it),
                      send the original message to the DLQ with a short reason, then return
@@ -31,9 +32,10 @@ from pydantic import ValidationError
 from shared.db import create_pool
 from shared.embedding import embed_batch, make_bedrock_client
 from shared.errors import MAX_REASON_LENGTH, PermanentError
-from shared.jobs import IngestFileJob, parse_ingest_job
+from shared.jobs import DeleteJob, IngestFileJob, parse_ingest_job
 from shared.telemetry import flush, setup_tracing
 from worker.pipeline import IngestResult, ingest_version
+from worker.purge import PurgeResult, purge_document
 
 log = logging.getLogger(__name__)
 logging.getLogger().setLevel(logging.INFO)  # Lambda's root logger defaults to WARNING
@@ -42,6 +44,7 @@ tracer = trace.get_tracer(__name__)
 SERVICE_NAME = "ragdp-worker"  # also the Honeycomb dataset
 
 RunIngest = Callable[[IngestFileJob], Awaitable[IngestResult]]
+RunPurge = Callable[[DeleteJob], Awaitable[PurgeResult]]
 SendToDlq = Callable[[str, str], None]  # (original body, reason)
 
 
@@ -54,10 +57,16 @@ def _validation_reason(exc: ValidationError) -> str:
 
 
 async def process_message(
-    body: str, *, raw_bucket: str, run_ingest: RunIngest, send_to_dlq: SendToDlq
+    body: str,
+    *,
+    raw_bucket: str,
+    run_ingest: RunIngest,
+    run_purge: RunPurge,
+    send_to_dlq: SendToDlq,
 ) -> str:
     """Handle one message body. Returns the outcome for the log: indexed, superseded,
-    skipped or dead_lettered. Raises on a transient error, so SQS retries."""
+    skipped, deleted, purged or dead_lettered. Raises on a transient error (including a
+    purge deferred by a live lease), so SQS retries."""
     try:
         job = parse_ingest_job(body)
     except ValidationError as exc:
@@ -68,9 +77,13 @@ async def process_message(
         {"ingest.job_id": job.job_id, "ingest.job_type": job.job_type}
     )
     try:
+        if isinstance(job, DeleteJob):
+            purged = await run_purge(job)
+            log.info("job %s: purged %s", job.job_id, purged)
+            return "purged"
         if not isinstance(job, IngestFileJob):
-            # Reindex and delete jobs come with the endpoints that produce them (Slice 2;
-            # reindex semantics are Open decision #8). Visible in the DLQ, never dropped.
+            # Reindex jobs come with their endpoint (reindex semantics are Open decision
+            # #8). Visible in the DLQ, never dropped.
             raise PermanentError("unsupported_job_type", f"{job.job_type} jobs aren't handled yet")
         if job.bucket != raw_bucket:
             raise PermanentError("wrong_bucket", "the message names a bucket other than raw")
@@ -154,6 +167,15 @@ async def _process_record(body: str, deps: _Deps) -> str:
                     embed_batch, deps.bedrock, model_id=deps.embedding_model_id
                 ),
                 embedding_model=deps.embedding_model_id,
+                delete_source=lambda: deps.s3.delete_object(Bucket=job.bucket, Key=job.key),
+            )
+
+        async def run_purge(job: DeleteJob) -> PurgeResult:
+            return await purge_document(
+                pool,
+                job.tenant_id,
+                job.doc_id,
+                delete_object=lambda key: deps.s3.delete_object(Bucket=deps.raw_bucket, Key=key),
             )
 
         def send_to_dlq(original: str, reason: str) -> None:
@@ -164,7 +186,11 @@ async def _process_record(body: str, deps: _Deps) -> str:
             )
 
         return await process_message(
-            body, raw_bucket=deps.raw_bucket, run_ingest=run_ingest, send_to_dlq=send_to_dlq
+            body,
+            raw_bucket=deps.raw_bucket,
+            run_ingest=run_ingest,
+            run_purge=run_purge,
+            send_to_dlq=send_to_dlq,
         )
     finally:
         await pool.close()

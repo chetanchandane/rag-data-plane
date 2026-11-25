@@ -24,6 +24,15 @@ variable "raw_bucket_arn" {
   type = string
 }
 
+variable "ingest_queue_url" {
+  description = "The ingest queue: DELETE /v1/documents sends the purge job here (step 21)."
+  type        = string
+}
+
+variable "ingest_queue_arn" {
+  type = string
+}
+
 variable "database_url_param_name" {
   description = "SSM SecureString with the app_api URL (pooled endpoint). Read at cold start."
   type        = string

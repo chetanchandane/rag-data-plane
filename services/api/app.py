@@ -16,12 +16,13 @@ from contextlib import asynccontextmanager
 import asyncpg
 import boto3
 import httpx
+from botocore.config import Config
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from api import documents, query, retrieve, whoami
 from api.breaker import Breakers
-from api.config import Settings
+from api.config import RETRY_AFTER_SECONDS, Settings
 from api.llm import llm_generate
 from api.rerank import CohereReranker, Reranker, cohere_api_key
 from api.uploads import make_s3_client
@@ -45,8 +46,6 @@ DB_UNAVAILABLE = (
     TimeoutError,  # command_timeout or connect timeout
     ConnectionError,  # refused or reset while connecting
 )
-RETRY_AFTER_SECONDS = 1
-
 log = logging.getLogger(__name__)
 
 
@@ -65,6 +64,16 @@ async def open_resources(app: FastAPI, service_name: str = "ragdp-api-local") ->
         connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
     )
     app.state.s3 = make_s3_client(settings.aws_region)
+    # The delete job. Short timeouts and two attempts in all (standard mode counts the
+    # first), at most about 10 s: botocore's 60 s defaults would outlast the Lambda's 29 s,
+    # and a failed send is a 503 that the client retries.
+    app.state.sqs = boto3.client(
+        "sqs",
+        region_name=settings.aws_region,
+        config=Config(
+            connect_timeout=2, read_timeout=3, retries={"mode": "standard", "max_attempts": 2}
+        ),
+    )
     # The query's embedding, blocking (api/retrieval.py runs it on a worker thread).
     app.state.embed_query = functools.partial(
         embed_text, query_client(settings.aws_region), model_id=settings.embedding_model_id
