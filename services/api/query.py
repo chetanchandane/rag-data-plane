@@ -18,7 +18,7 @@ from api.answering import AnswerConfig, answer_query
 from api.auth import Claims, get_claims
 from api.config import Settings
 from api.deps import get_pool, get_settings
-from api.llm import Generate, LlmModel
+from api.llm import PRIMARY_READ_TIMEOUT_S, SECONDARY_READ_TIMEOUT_S, Generate, LlmModel
 from api.rerank import Reranker
 from api.retrieval import MAX_TOP_K, EmbedQuery, retrieve
 from api.retrieve import MAX_QUERY_CHARS, get_embed_query, get_reranker
@@ -71,8 +71,14 @@ def get_generate(request: Request) -> Generate:
 
 def answer_config(settings: Settings) -> AnswerConfig:
     return AnswerConfig(
-        primary=LlmModel(settings.llm_primary_model_id, settings.llm_primary_effort),
-        secondary=LlmModel(settings.llm_secondary_model_id),
+        primary=LlmModel(
+            settings.llm_primary_model_id,
+            settings.llm_primary_effort,
+            read_timeout_s=PRIMARY_READ_TIMEOUT_S,
+        ),
+        secondary=LlmModel(
+            settings.llm_secondary_model_id, read_timeout_s=SECONDARY_READ_TIMEOUT_S
+        ),
         abstain_threshold=settings.abstain_threshold,
         context_chunks=settings.llm_context_chunks,
     )

@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 
 from api import documents, query, retrieve, whoami
 from api.config import Settings
-from api.llm import generate, llm_client
+from api.llm import llm_generate
 from api.rerank import CohereReranker, Reranker, cohere_api_key
 from api.uploads import make_s3_client
 from shared.db import create_pool
@@ -71,8 +71,9 @@ async def open_resources(app: FastAPI, service_name: str = "ragdp-api-local") ->
     # One HTTP connection pool for the reranker, reused by warm invocations.
     app.state.http = httpx.AsyncClient()
     app.state.reranker = _reranker(settings, app.state.http, ssm)
-    # The answer, blocking (api/answering.py runs it on a worker thread).
-    app.state.generate = functools.partial(generate, llm_client(settings.aws_region))
+    # The answer, blocking (api/answering.py runs it on a worker thread), with each model's
+    # own read timeout.
+    app.state.generate = llm_generate(settings.aws_region)
     app.state.verifier = None
     if settings.jwt_issuer:
         # Imported only here: on Lambda JWT_ISSUER isn't set, API Gateway verifies tokens,

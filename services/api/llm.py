@@ -22,8 +22,9 @@ Blocking (boto3): the caller runs generate() on a worker thread.
 """
 
 import logging
+import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import boto3
 from botocore.config import Config
@@ -35,15 +36,19 @@ ANSWER_TOOL_NAME = "submit_answer"
 # Room for Claude's (low-effort) thinking plus an answer with a few quotes.
 MAX_OUTPUT_TOKENS = 4096
 
-# Each model gets 10 s and no retry: embedding (up to about 4.5 s), SQL (2 s), the
-# reranker (1.5 s) and both models then fit in the Lambda's 29 s, under API Gateway's
+# No retry, and 20 s for the two models together: embedding (up to about 4.5 s), SQL (2 s),
+# the reranker (1.5 s) and both models then fit in the Lambda's 29 s, under API Gateway's
 # 30 s. botocore's read timeout is the wait for the response, which for a non-streaming
 # Converse call is the generation time.
-LLM_TIMEOUTS = Config(
-    retries={"mode": "standard", "total_max_attempts": 1},
-    connect_timeout=2,
-    read_timeout=10,
-)
+#
+# The 20 s is split 6 / 14 (DECISIONS 2026-11-24, "Step 19"), not 10 / 10. Nova's slowest
+# of 136 eval answers took 5.0 s; Qwen, which answers the prompts Nova misquoted, took up
+# to 11.9 s and 5 of its 30 probe calls passed 10 s. A slower primary (Claude with
+# thinking) would need this split looked at again.
+PRIMARY_READ_TIMEOUT_S = 6
+SECONDARY_READ_TIMEOUT_S = 14
+# What both clients share; each sets its own read timeout (llm_client).
+LLM_TIMEOUTS = Config(retries={"mode": "standard", "total_max_attempts": 1}, connect_timeout=2)
 
 # USD per million tokens (input, output), by the model ID sent to Converse.
 # Nova 2 Lite: AWS Price List API, us-east-2, 2026-11-22.
@@ -110,6 +115,9 @@ class ModelAnswer(BaseModel):
 class LlmModel:
     model_id: str  # a us.* inference profile or an in-Region model ID
     effort: str | None = None  # Claude only; None for other models
+    # How long to wait for the answer, set by role (api/query.py). Required, so no model
+    # silently gets the other role's budget: 14 s for both wouldn't fit the Lambda.
+    read_timeout_s: int = field(kw_only=True)
 
     @property
     def is_claude(self) -> bool:
@@ -129,9 +137,30 @@ class Generation:
 Generate = Callable[[LlmModel, str, str], Generation]
 
 
-def llm_client(region: str):
-    """The API's bedrock-runtime client for generation (LLM_TIMEOUTS)."""
-    return boto3.client("bedrock-runtime", region_name=region, config=LLM_TIMEOUTS)
+def llm_client(region: str, read_timeout_s: int):
+    """A bedrock-runtime client for generation: LLM_TIMEOUTS with this read timeout."""
+    config = LLM_TIMEOUTS.merge(Config(read_timeout=read_timeout_s))
+    return boto3.client("bedrock-runtime", region_name=region, config=config)
+
+
+def llm_generate(region: str, make_client: Callable[[str, int], object] = llm_client) -> Generate:
+    """generate() with the client whose read timeout is the model's own. botocore sets
+    timeouts per client, not per call, so there is one client per timeout. The two that
+    production uses are made up front; any other is made on first use."""
+    clients = {
+        seconds: make_client(region, seconds)
+        for seconds in (PRIMARY_READ_TIMEOUT_S, SECONDARY_READ_TIMEOUT_S)
+    }
+    lock = threading.Lock()  # generate() runs on worker threads
+
+    def run(model: LlmModel, system: str, prompt: str) -> Generation:
+        with lock:
+            client = clients.get(model.read_timeout_s)
+            if client is None:
+                client = clients[model.read_timeout_s] = make_client(region, model.read_timeout_s)
+        return generate(client, model, system, prompt)
+
+    return run
 
 
 def converse_request(model: LlmModel, system: str, prompt: str) -> dict:

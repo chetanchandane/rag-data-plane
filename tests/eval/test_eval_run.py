@@ -21,7 +21,6 @@ recorded per question, the results file is written, and only then does the gate 
 """
 
 import asyncio
-import functools
 import hashlib
 import json
 import os
@@ -36,7 +35,7 @@ import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
 from api.answering import PROMPT_VERSION
-from api.llm import generate, llm_client
+from api.llm import llm_generate
 from api.rerank import CohereReranker, Reranker, RerankError
 from shared.db import create_pool
 from tests.api.apphelpers import REGION, build_app, client, cohere_key, make_settings, mint
@@ -202,7 +201,7 @@ async def test_eval_run(spans):
             llm_primary_model_id=primary, llm_secondary_model_id=secondary
         )
         app.state.embed_query = matrix.fixture_embedder()
-        app.state.generate = functools.partial(generate, llm_client(REGION))
+        app.state.generate = llm_generate(REGION)
         async with httpx.AsyncClient() as http:
             recorder = RecordingReranker(
                 CohereReranker(http, cohere_key(), settings.rerank_model_id)
@@ -332,6 +331,10 @@ async def test_eval_run(spans):
     failures: list[str] = []
     if GATE_FILE.exists():
         floors = json.loads(GATE_FILE.read_text())
+    # No baseline (null) after the golden set changes: a run on the new set can't be compared
+    # with one on the old set, so only the absolute rules apply until it becomes the baseline
+    # (DECISIONS 2026-11-24, "Step 19").
+    if floors.get("baseline"):
         stored = json.loads((ROOT / floors["baseline"]).read_text())
         baseline = stored["summary"]
         failures += metrics.baseline_mismatches(meta, stored["meta"])

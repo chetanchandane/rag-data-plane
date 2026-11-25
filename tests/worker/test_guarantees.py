@@ -199,6 +199,33 @@ async def test_a_crash_mid_embed_resumes_without_duplicates(
     assert (row["status"], row["attempts"], row["last_error"]) == ("indexed", 2, None)
 
 
+async def test_a_resume_after_a_parser_change_starts_the_chunks_over(
+    pool: asyncpg.Pool, tenant: uuid.UUID, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stored chunks are reused by chunk_index only if the same parser made them: a new
+    parser can change what chunk N contains (DECISIONS 2026-11-24, "Step 19")."""
+    monkeypatch.setattr(pipeline, "EMBED_BATCH_SIZE", 4)
+    data = long_pdf()
+    parts, key = await registered(pool, tenant, data)
+
+    # The first attempt runs an older parser and dies after one batch.
+    monkeypatch.setattr(pipeline, "PARSER_VERSION", "pymupdf-old")
+    with pytest.raises(RuntimeError):
+        await ingest(pool, key, data, RecordingEmbed(fail_on_call=2, failure=RuntimeError("x")))
+    assert [c["chunk_index"] for c in await doc_chunks(pool, parts)] == [0, 1, 2, 3]
+    monkeypatch.undo()
+    monkeypatch.setattr(pipeline, "EMBED_BATCH_SIZE", 4)
+
+    retry = RecordingEmbed()
+    result = await ingest(pool, key, data, retry)
+
+    assert result.outcome == "indexed"
+    chunks = await doc_chunks(pool, parts)
+    assert retry.texts == [c["content"] for c in chunks]  # every chunk embedded again
+    assert [c["chunk_index"] for c in chunks] == list(range(result.chunk_count))
+    assert (await version_row(pool, parts))["parser"] == pipeline.PARSER_VERSION
+
+
 # --- 3. v2 then v1: v2 stays live ----------------------------------------------------------
 
 

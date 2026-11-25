@@ -328,7 +328,7 @@ RETURNING attempts;
 ```
 
 2. **Verify** the downloaded bytes hash to the stored `sha256`.
-3. **Parse** page by page, keeping page numbers and heading paths.
+3. **Parse** page by page, keeping page numbers and heading paths. Footnotes move to the end of the document under a `Footnotes` heading, footnote markers in body text are dropped, and a paragraph that runs over a page break stays one block, so no sentence is split by what sits at the bottom of a page (DECISIONS 2026-11-24, "Step 19").
 4. **Chunk** at roughly 500 to 800 tokens on heading boundaries. Keep each table whole as markdown; if one must split, repeat its header row in every piece.
 5. **Resume**: insert chunks with `ON CONFLICT (doc_id, version, chunk_index) DO NOTHING`, and embed only the indexes that are missing. A crash after 80% of the work costs 20% on retry.
 6. **Embed** in batches of 32 with exponential backoff and full jitter on 429 and 5xx, 5 tries max.
@@ -457,9 +457,9 @@ LIMIT 30;
 | Query embedding | 2 s, 1 retry | Lexical-only recall | `degraded: ["embedding"]` |
 | Postgres | 2 s statement timeout | 503 with `Retry-After` | none |
 | Reranker | 1.5 s, no retry | Keep RRF order | `degraded: ["reranker"]` |
-| Primary LLM | 10 s (DECISIONS 2026-11-22: both models must fit in API Gateway's 30 s); an error or unusable output | Secondary model | `degraded: ["llm_primary"]` |
+| Primary LLM | 6 s (DECISIONS 2026-11-24, "Step 19": the two models share 20 s, to fit API Gateway's 30 s); an error or unusable output | Secondary model | `degraded: ["llm_primary"]` |
 | Primary LLM's answer fails the citation check | (DECISIONS 2026-11-24, "Citation failure fails over") | Secondary model, once | `degraded: ["citation_retry"]` |
-| Secondary LLM | 10 s | Abstain | `abstain_reason`: `citation_check_failed` if an answer failed the check, else `llm_unavailable` or `llm_output_invalid` |
+| Secondary LLM | 14 s | Abstain | `abstain_reason`: `citation_check_failed` if an answer failed the check, else `llm_unavailable` or `llm_output_invalid` |
 
 Circuit breakers open after 5 failures in 30 s and half-open after 30 s. On Lambda they are per instance, not global. That is a documented trade-off, and worth saying out loud in interviews.
 

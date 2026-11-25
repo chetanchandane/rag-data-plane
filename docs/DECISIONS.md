@@ -2,6 +2,47 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-24: Step 19, the backup model stays; sentences split at page breaks are fixed instead
+
+- **The probe** (`scripts/probe_backup.py`, results in `eval/results/probes/`): the baseline's 14 citation-retry prompts plus 16 other answerable questions, each built by the API's own path (fixture embedding, recall under RLS as a-r1, Cohere rerank, the top 5, `build_prompt`), reranked once and sent identically to every model, with a 30 s read timeout so real latency shows. Three runs, $0.26 in all.
+  - **No candidate beats Qwen.** p50 / p95, misquotes on the 14 retry prompts and the 16 others:
+    - **Qwen3 235B (today's backup):** 6.8 s / 11.6 s, 7 and 3.
+    - **GLM 4.7:** 3.7 s / 5.4 s, 9 and 6.
+    - **Kimi K2.5:** 6.7 s / 23.1 s, 6 and 4.
+    - **GLM 4.7 Flash:** 1.6 s / 3.0 s, 12 and 6.
+  - **No call errored, returned malformed output or hit the token cap.** Every misquote was `quote_not_found`.
+- **Correction to 2026-11-24, "Citation failure fails over":** misquotes are not all random per answer. Four prompts (q011, q051, q060, q061) defeated all four models. Two of them, q011 and q061, were baseline timeouts, so "about 98.7% without the timeouts" was too optimistic: Qwen would most likely have misquoted them given more time.
+- **Why the quotes failed** (Qwen's 7 rejected quotes from a rerun that saved them): none was invented text, and none was typography.
+  - **3: something from the bottom of the page sat inside the sentence.** In q019 the chunk read "…available for reference to clinical trial 60 See page 6 of the 2003 part 11 guidance. 61 See § 11.10(i). personnel and participants…". q061 had a page number ("36") at y 696 of 792, just outside the 12% footer margin. q011's two halves ended up in different chunks. The models quoted the clean sentence, which was right, and the check had to reject it.
+  - **2: the quote stopped mid-sentence and the model added a full stop** (q010, q142).
+  - **1: the right text with another chunk's id** (q007).
+  - **1: a chunk id that wasn't in the context** (q117).
+- **Decision** (Chetan, 2026-11-24, "option A"): **keep Qwen, fix the parser, and split the 20 s as 6 s for the primary and 14 s for the secondary.** The citation check stays strict.
+  - **Footnotes move to the end of the document**, like endnotes, as blocks under the section path `Footnotes` with their own page numbers. The chunker's top-level-heading rule then gives them their own chunks.
+    - **How a footnote is recognized:** a block in the bottom half of the page, smaller than the body font (the most common size by characters), that starts with a 1-3 digit number set smaller still. From the first one down, every smaller-than-body block counts, and so does a run of them directly above it (a footnote continued from the previous page). Tried on the 12 FDA/ICH PDFs, it found about one footnote block per in-body marker. The "misses" left over were title-page contact details, contents pages and figures. Footnotes are 11-19% of the text of the four FDA Q&A guidances and about 1% of the ICH ones.
+    - **Moved, not dropped:** some footnotes say things the body doesn't (e.g. a sponsor transferring obligations to a CRO). No golden quote comes from a footnote. The cost: a footnote chunk has no section context, and its page range can span several pages.
+  - **Footnote markers in body text are removed**, so "original records.33" becomes "original records.". A marker is any superscript span of 1-3 digits. Accepted risk: an exponent ("10" then a superscript "6") or a unit like "m²" written with a superscript digit loses it. The 12 FDA/ICH PDFs have none, and "106" isn't right as plain text either.
+  - **A paragraph that runs over a page break is one block.** The rule: both halves are under the same heading path, the previous page's last text block doesn't end a sentence (`. ! ? : ;`), and the next page's first text block starts in lowercase and isn't a list item ("ii. ", "b) ", "(a) "). The block starts at the first half's page and heading, and its `page_end` is the second half's page, so its chunk's page range covers both. This fixed q011, where the chunker had closed a chunk between the two halves.
+  - **The running-footer margin is 15% (was 12%).** Only lines that repeat on at least half the pages are dropped, so the wider margin doesn't touch body text.
+  - **Versioning:** `PARSER_VERSION` becomes `pymupdf-<version>+footnotes-v1`. A resumed ingest reuses stored chunks by `chunk_index` only if both the parser and the chunker match. Before this, only the chunker was compared, but a parser change also changes what chunk N contains. The claim now returns the stored `parser`.
+  - **Timeouts 6 / 14:** Nova's slowest of 136 eval answers was 5.0 s (p95 3.8 s). Qwen's slowest of 60 probe calls was 11.9 s, none over 14 s, and 5 to 7 of every 30 passed 10 s. The total stays 20 s, so the Lambda budget is unchanged. `LlmModel` carries `read_timeout_s`; `answer_config()` sets it by role. `llm_generate()` holds one Bedrock client per timeout, because botocore sets timeouts per client, not per call. The eval and the paid tests use it too, so they measure production's timeouts. A slower primary (Claude with thinking) would need the split looked at again.
+- **Rejected:**
+  - **Switching the backup:** see the probe. GLM is fast but misquotes more; Kimi has a 23 s tail.
+  - **Sentence-number citations** (the server copies the sentence): it fixes all four causes, but it redesigns the schema and the prompt, and it needs a sentence splitter that copes with "e.g." and "§ 11.1(b)". Footnote text would still appear in citations.
+  - **Two narrow check rules** (ignore a full stop the model added at the end; accept a quote found in another of the request's chunks and correct its id): they fix at most 3 of the 7 and none of the page-break cases. They're the next lever if the eval stays under 98%.
+  - **Dropping footnotes:** it's simpler, but it loses content.
+- **From the code review** (2026-11-24):
+  - **Fixed:**
+    - A joined paragraph lost its second page. q027's golden source showed it, moving from page 21 to page 20. `Block.page_end` now carries the second page.
+    - The join could cross a new heading or merge a lowercase list item.
+    - The body font size cost a third text extraction per page; it's now counted in the same pass as the running headers and footers.
+    - `LlmModel.read_timeout_s` and `llm_client()`'s timeout had a hidden 14 s default, so a primary built by hand could get the backup's budget. 14 s twice doesn't fit the Lambda. Both are now required.
+    - The probe's docstring still described production as 10 s. `--ids` silently dropped ids outside the questions already picked.
+  - **Kept as is, with reasons:**
+    - **A page whose only footnote text continues one from the previous page stays in the body.** The corpus has no such page. The 8 candidates were page numbers set in small type, which the suggested rule would have classified as footnotes.
+    - **Footnote lines that repeat on half the pages inside the 15% margin are still dropped as running footers.** In the corpus the wider margin dropped 61 more lines, all page numbers, none footnotes. Exempting footnote blocks would keep the page numbers that often sit among them.
+- **Production's 3 test documents keep their old chunks:** the same file can't be ingested again as a new version (Open decision #8). The eval branch is recreated from `dev` and reloaded.
+
 ## 2026-11-24: Slice 3 step list
 
 - **Steps 19 to 23** (Chetan, 2026-11-24), in CLAUDE.md: faster backup model, circuit breakers, `DELETE` and the delete job, the query cache, the chaos table.

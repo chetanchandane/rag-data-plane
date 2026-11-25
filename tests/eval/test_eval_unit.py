@@ -385,14 +385,16 @@ def test_the_committed_gate_file_is_usable():
 
     gate = json.loads((ROOT / "eval" / "gate.json").read_text())
     assert set(gate) <= {"baseline", "abstain_precision_floor", "citation_validity_floor", "why"}
-    baseline_path = ROOT / gate["baseline"]
-    assert baseline_path.exists(), gate["baseline"]
-    assert "_dirty" not in baseline_path.name and "_sample" not in baseline_path.name
-    baseline = json.loads(baseline_path.read_text())
-    assert baseline["meta"]["dirty"] is False
-    # Every gated score has a value to compare with: an old run without one would
-    # silently switch that check off.
-    assert all(baseline["summary"].get(name) is not None for name in metrics.GATED_SCORES)
+    # null only between a golden-set change and the first run on the new set (Step 19).
+    if gate["baseline"] is not None:
+        baseline_path = ROOT / gate["baseline"]
+        assert baseline_path.exists(), gate["baseline"]
+        assert "_dirty" not in baseline_path.name and "_sample" not in baseline_path.name
+        baseline = json.loads(baseline_path.read_text())
+        assert baseline["meta"]["dirty"] is False
+        # Every gated score has a value to compare with: an old run without one would
+        # silently switch that check off.
+        assert all(baseline["summary"].get(name) is not None for name in metrics.GATED_SCORES)
     # A temporary floor, not an escape hatch: never below 90%, never above SPEC's 98%.
     assert 0.90 <= gate.get("citation_validity_floor", 0.98) <= metrics.CITATION_VALIDITY_MIN
     assert 0.5 <= gate["abstain_precision_floor"] <= 1.0

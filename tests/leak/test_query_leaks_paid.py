@@ -14,14 +14,13 @@ itself is the same recall SQL that the /v1/retrieve matrix checks in CI.
 """
 
 import asyncio
-import functools
 import random
 from collections import Counter
 
 import httpx
 import pytest
 
-from api.llm import generate, llm_client
+from api.llm import llm_generate
 from api.rerank import CohereReranker
 from shared.db import create_pool
 from tests.api.apphelpers import REGION, build_app, client, cohere_key, mint
@@ -55,7 +54,7 @@ async def test_answers_never_carry_another_tenants_or_a_higher_levels_data():
         first = personas[0]
         app = build_app(pool, first.tenant_id, first.role_level)
         app.state.embed_query = matrix.fixture_embedder()
-        app.state.generate = functools.partial(generate, llm_client(REGION))
+        app.state.generate = llm_generate(REGION)
         async with httpx.AsyncClient() as http:
             model = app.state.settings.rerank_model_id
             app.state.reranker = CohereReranker(http, cohere_key(), model)

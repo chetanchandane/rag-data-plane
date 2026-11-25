@@ -24,8 +24,8 @@ from api.llm import Generation, LlmModel, ModelAnswer, ModelCitation
 from api.rerank import RerankError
 from api.retrieval import RetrievalResult, RetrievedChunk
 
-PRIMARY = LlmModel("us.anthropic.claude-haiku-5-5", "low")
-SECONDARY = LlmModel("us.amazon.nova-2-lite-v1:0")
+PRIMARY = LlmModel("us.anthropic.claude-haiku-5-5", "low", read_timeout_s=6)
+SECONDARY = LlmModel("us.amazon.nova-2-lite-v1:0", read_timeout_s=14)
 CONFIG = AnswerConfig(PRIMARY, SECONDARY, abstain_threshold=0.3, context_chunks=5)
 
 
@@ -330,8 +330,8 @@ async def test_a_failed_primary_falls_back_to_the_secondary(primary_failure):
 # The production pair since 2026-11-24 (DECISIONS, "LLMs without Anthropic"): neither is
 # Claude, and the secondary is an in-Region id, not a us.* profile.
 PRODUCTION = AnswerConfig(
-    LlmModel("us.amazon.nova-2-lite-v1:0", "low"),
-    LlmModel("qwen.qwen3-235b-a22b-2507-v1:0"),
+    LlmModel("us.amazon.nova-2-lite-v1:0", "low", read_timeout_s=6),
+    LlmModel("qwen.qwen3-235b-a22b-2507-v1:0", read_timeout_s=14),
     abstain_threshold=0.3,
     context_chunks=5,
 )
@@ -373,7 +373,7 @@ async def test_malformed_output_from_both_models_is_its_own_abstain_reason():
 
 
 async def test_an_unknown_model_price_reports_cost_as_unknown():
-    unpriced = AnswerConfig(LlmModel("us.example.new-model"), SECONDARY, 0.3, 5)
+    unpriced = AnswerConfig(LlmModel("us.example.new-model", read_timeout_s=6), SECONDARY, 0.3, 5)
     llm = FakeLlm()
     llm.outcomes["us.example.new-model"] = GOOD
     result = await answer_query(

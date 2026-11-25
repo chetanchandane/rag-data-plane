@@ -32,6 +32,7 @@ class Claim:
     attempts: int  # value after this claim: the fencing token
     sha256: str  # stored at registration; the file must match it
     min_role_level: int  # copied onto every chunk
+    parser: str | None  # what a previous attempt parsed with, if any
     chunker_version: str | None  # what a previous attempt chunked with, if any
 
 
@@ -50,7 +51,7 @@ WHERE doc_id = $1 AND version = $2 AND s3_key = $3
   AND (status IN ('pending_upload', 'uploaded')
        OR (status = 'failed' AND attempts < 3)
        OR (status IN ('parsing', 'embedding') AND lease_until < now()))
-RETURNING attempts, sha256, chunker_version
+RETURNING attempts, sha256, parser, chunker_version
 """
 
 
@@ -85,6 +86,7 @@ async def claim(conn: asyncpg.Connection, parts: S3KeyParts, s3_key: str) -> Cla
         attempts=row["attempts"],
         sha256=row["sha256"],
         min_role_level=min_role_level,
+        parser=row["parser"],
         chunker_version=row["chunker_version"],
     )
 
@@ -119,8 +121,11 @@ async def start_embedding(
         if updated is None:
             raise LeaseLostError(f"lost the lease on {claim.doc_id} v{claim.version}")
         # Resume reuses stored chunks by chunk_index. That is only valid if they came from
-        # the same chunker; after a chunker change, start this version's chunks over.
-        if claim.chunker_version is not None and claim.chunker_version != chunker_version:
+        # the same parser and chunker: either one changes what chunk N contains (moving
+        # footnotes did, DECISIONS 2026-11-24 "Step 19"). After a change, start this
+        # version's chunks over.
+        before = (claim.parser, claim.chunker_version)
+        if claim.chunker_version is not None and before != (parser, chunker_version):
             await conn.execute(
                 "DELETE FROM chunks WHERE doc_id = $1 AND version = $2",
                 claim.doc_id,

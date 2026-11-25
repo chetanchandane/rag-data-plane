@@ -18,7 +18,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from api.llm import generate, llm_client
+from api.llm import llm_generate
 from api.rerank import CohereReranker
 from shared.embedding import embed_batch, embed_text, make_bedrock_client, query_client
 from tests.api.apphelpers import (
@@ -83,7 +83,7 @@ async def test_a_real_question_gets_a_cited_answer(api_pool, nist_tenant, primar
     app = build_app(api_pool, nist_tenant, role_level=1)
     app.state.settings = make_settings(llm_primary_model_id=primary)
     app.state.embed_query = functools.partial(embed_text, query_client(REGION), model_id=MODEL_ID)
-    app.state.generate = functools.partial(generate, llm_client(REGION))
+    app.state.generate = llm_generate(REGION)
 
     async with httpx.AsyncClient() as http, client(app) as c:
         model = app.state.settings.rerank_model_id

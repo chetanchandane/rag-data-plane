@@ -61,7 +61,7 @@ def chunk(blocks: list[Block]) -> list[Chunk]:
                     index=len(chunks),
                     content=_SEPARATOR.join(p.text for p in current),
                     page_start=min(p.page for p in current),
-                    page_end=max(p.page for p in current),
+                    page_end=max(p.last_page for p in current),
                     section_path=" > ".join(path) if path else None,
                 )
             )
@@ -89,7 +89,11 @@ def _split_block(block: Block) -> list[Block]:
         texts = _split_table(block.text)
     else:
         texts = _pack(_sentences(block.text), " ")
-    return [Block(block.page, block.kind, text, block.section_path) for text in texts]
+    # Each piece keeps the block's page range: a piece of a paragraph that runs over a page
+    # break may be on either page.
+    return [
+        Block(block.page, block.kind, text, block.section_path, block.page_end) for text in texts
+    ]
 
 
 def _sentences(text: str) -> list[str]:

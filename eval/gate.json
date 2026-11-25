@@ -1,6 +1,5 @@
 {
-  "baseline": "eval/results/2026-11-24_94a08e6ee5e1.json",
+  "baseline": null,
   "abstain_precision_floor": 0.80,
-  "citation_validity_floor": 0.95,
-  "why": "First baseline (DECISIONS 2026-11-24, 'Step 18 baseline and temporary floors'). Both floors allow about 7 citation failures in 150 answers (the baseline had 5) so one random extra failure doesn't fail a run. SPEC's 98% citation validity stays the target for Slice 3."
+  "why": "Step 19 changed the golden set (q027 and q112 quotes shortened to fit one chunk after the parser change), so the next full run has no comparable baseline: it is gated on the absolute rules only, including SPEC's 98% citation validity (the temporary 95% floor is gone), and then becomes the baseline (DECISIONS 2026-11-24, 'Step 19'). The abstain precision floor stays from step 18."
 }
