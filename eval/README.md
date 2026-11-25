@@ -36,9 +36,36 @@ uv run pytest -m eval -s                                         # the eval run 
 
 `load` needs `EVAL_DATABASE_URL_INGEST`, `NEON_EVAL_ENDPOINT_ID`, `EMBEDDING_MODEL_ID`, `AWS_REGION` and an `aws login` session; it refuses any database but the `eval` branch and is safe to rerun. Regenerating the golden set (`scripts/eval_golden.py generate`, Mistral Large 3 on Bedrock, about $0.20) replaces the questions; review a sample afterwards.
 
-## Baseline (2026-11-24)
+## Baseline (2026-11-25, step 19)
 
-`results/2026-11-24_94a08e6ee5e1.json`, the baseline in `gate.json`. Run from a laptop with the code at `94a08e6`. Answers come from Nova 2 Lite, with Qwen3 235B as the backup; the judge is DeepSeek V3.2; answer prompt `2026-11-24.1`.
+`results/2026-11-25_ce7f4b49934f.json`, the baseline in `gate.json`. Run from a laptop with the code at `ce7f4b4`. The models, judge and answer prompt are the same as in step 18. What changed is the parser (footnotes moved to the end of each document, a paragraph split by a page break kept whole), the LLM timeouts (6 s for Nova, 14 s for Qwen instead of 10 s each), and two golden quotes (q027 and q112, shortened to the part inside one chunk). DECISIONS 2026-11-24, "Step 19".
+
+The golden set changed, so the gate couldn't compare this run with step 18's. It ran on the fixed rules only, and passed. Compared by hand:
+
+| Metric | Step 18 (`94a08e6`) | Step 19 (`ce7f4b4`) | Gate from now on |
+| --- | ---: | ---: | --- |
+| Citation validity (what users get) | 96.7% | **98.0%** | below 98% fails (SPEC; the temporary 95% floor is gone) |
+| Primary's citation validity | 90.7% | 92.7% | drop > 3 points fails |
+| Citation retries / still failed | 14 / 5 | 11 / 3 | reported |
+| Context recall | 99.3% | 98.0% | drop > 3 points fails |
+| Recall@30 | 99.3% | 98.0% | reported |
+| Faithfulness (judge) | 99.5% | 99.6% | drop > 3 points fails |
+| Answer relevance (judge) | 96.9% | 95.2% | drop > 3 points fails |
+| Answered rate (answerable) | 96.7% | 98.0% | reported |
+| Abstain precision | 85.7% | 90.9% | below 80% fails |
+| Abstain recall | 100% | 100% | reported |
+| End to end p50 / p95 | 2.5 s / 10.4 s | 2.5 s / 7.4 s | reported |
+| LLM cost per 1,000 queries | $2.09 | $2.09 | reported |
+
+**What the numbers say:**
+- **98.0% is 147 of 150, exactly SPEC's line.** One more failure would be 97.3%, and run-to-run noise is about ±2 failures, so a later run of unchanged code can fail the gate by chance.
+- **The 3 failures:** q009 and q076 were misquoted by both models. On q134 Qwen hit its 14 s limit.
+- **Context recall fell by 2 questions (q043, q078).** Their quotes are now in chunks that span pages 10-11 and start on another topic, so the question no longer recalls them. Both were still answered from other chunks.
+- **Answer relevance is 1.7 points lower,** lower on 7 questions and higher on 5. That's within judge noise and the 3-point rule.
+
+## Previous baseline (2026-11-24, step 18)
+
+`results/2026-11-24_94a08e6ee5e1.json`, the baseline in `gate.json` until step 19. Run from a laptop with the code at `94a08e6`. Answers come from Nova 2 Lite, with Qwen3 235B as the backup; the judge is DeepSeek V3.2; answer prompt `2026-11-24.1`.
 
 | Metric | Value | Gate |
 | --- | ---: | --- |

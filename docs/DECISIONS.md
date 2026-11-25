@@ -41,6 +41,12 @@ Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. F
   - **Kept as is, with reasons:**
     - **A page whose only footnote text continues one from the previous page stays in the body.** The corpus has no such page. The 8 candidates were page numbers set in small type, which the suggested rule would have classified as footnotes.
     - **Footnote lines that repeat on half the pages inside the 15% margin are still dropped as running footers.** In the corpus the wider margin dropped 61 more lines, all page numbers, none footnotes. Exempting footnote blocks would keep the page numbers that often sit among them.
+- **Result** (`eval/results/2026-11-25_ce7f4b49934f.json`, code `ce7f4b4`, the new baseline):
+  - **Citation validity reached 98.0%,** SPEC's target. The primary on its own is at 92.7%, and 11 retries left 3 failures (step 18: 96.7%, 90.7%, 14 and 5).
+  - **The other scores:** context recall 98.0%, faithfulness 99.6%, answer relevance 95.2%, abstain precision 90.9%, p95 7.4 s (10.4 s before).
+  - **Finding:** context recall lost q043 and q078 because chunk boundaries moved. Their quotes now sit in chunks that span pages 10-11 and start on another topic. A chunker that started a new chunk at the page-break join would be a separate change, with a new chunker version and a re-ingest.
+  - **Risk:** 147 of 150 is exactly at the line, so an unchanged system can fail the gate on run-to-run noise (about ±2 failures). If that keeps happening, the next lever is the two narrow check rules above.
+  - `gate.json` points at this run and the 95% floor is gone. The comparison with step 18 is in `eval/README.md`.
 - **Production's 3 test documents keep their old chunks:** the same file can't be ingested again as a new version (Open decision #8). The eval branch is recreated from `dev` and reloaded.
 
 ## 2026-11-24: Slice 3 step list

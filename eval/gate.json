@@ -1,5 +1,5 @@
 {
-  "baseline": null,
+  "baseline": "eval/results/2026-11-25_ce7f4b49934f.json",
   "abstain_precision_floor": 0.80,
-  "why": "Step 19 changed the golden set (q027 and q112 quotes shortened to fit one chunk after the parser change), so the next full run has no comparable baseline: it is gated on the absolute rules only, including SPEC's 98% citation validity (the temporary 95% floor is gone), and then becomes the baseline (DECISIONS 2026-11-24, 'Step 19'). The abstain precision floor stays from step 18."
+  "why": "Step 19's run, the first full run on the changed golden set (DECISIONS 2026-11-24, 'Step 19'). Citation validity uses SPEC's 98%: the temporary 95% floor is gone. The abstain precision floor stays from step 18."
 }
