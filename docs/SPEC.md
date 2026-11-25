@@ -681,9 +681,9 @@ Post: the leak matrix and what pgvector + RLS changed versus the Qdrant pipeline
 
 ### Slice 3: Resilience (2 to 3 days)
 
-- [ ] Timeouts, fallbacks, circuit breakers and `degraded` flags in place
+- [x] Timeouts, fallbacks, circuit breakers and `degraded` flags in place
 - [x] Cache with epoch invalidation; delete test passes through the cache
-- [ ] Every row of the chaos table passes; results written up
+- [x] Every row of the chaos table passes; results written up
 
 Post: what the API does when the reranker or the LLM goes down.
 

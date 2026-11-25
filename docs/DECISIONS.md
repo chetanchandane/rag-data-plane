@@ -2,6 +2,42 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-25: Step 23, the chaos table
+
+- **Split as SPEC says** (Chetan, 2026-11-25):
+  - **The dependency rows run in CI with faulty fakes:** `tests/api/test_chaos.py`, marked `db`, one test per row, against the Neon dev branch.
+  - **The queue and worker rows run on the deployed stack,** as one dedicated test tenant, driven by `scripts/chaos.py`. Commands and results: `docs/runbooks/chaos.md`.
+- **The CI rows fault the real failure path,** not a fake that returns the fallback:
+  - the production `CohereReranker` over an httpx transport that refuses every connection;
+  - a Bedrock-shaped `ClientError` 500 for the primary model only;
+  - recall's SQL swapped for a `pg_sleep(3)`, so real Postgres cancels it at the API's 2 s `statement_timeout`. The test asserts that the logged exception is `QueryCanceledError`. With a sleep under 2 s, the test fails, as checked.
+  - **Overlap with step 15's and 20's tests is accepted:** this file maps one-to-one onto SPEC's table, which makes it the place to point at.
+- **"Quality delta recorded" is measured free.** Context recall (the golden quote is in the 5 chunks the model saw) is a string match. So `tests/eval/test_rerank_delta.py` (opt-in `-m chaos`) runs the 150 answerable questions through `/v1/retrieve` with reranking off, on the `eval` branch with the committed query embeddings: no Cohere, no LLM. It compares the RRF top 5 with the reranked baseline. Recall@30 must equal the baseline's, which checks that the same system was measured.
+  - **Rejected for now:** a full eval with the reranker down, about $1. It would show the effect on answers, but the eval treats a degraded reranker as an invalid run, so it would need a mode of its own.
+- **The worker crash is a real Lambda timeout** (Chetan approved the out-of-band change, 2026-11-25). Nothing outside Lambda can kill a running invocation, so the worker's timeout was lowered by CLI for one ingest, then restored. The runbook's crash section runs in a subshell whose `EXIT` trap restores the timeout however the section ends (a failure, Ctrl-C), and `terraform plan` confirms no drift.
+  - **Parsing is about 15x slower than embedding.** PyMuPDF's table finder reads every character (about 75% of parse time in a profile), so no PDF can be made embedding-heavy. The timeout was set from a clean run's timeline instead: the moment embedding starts, plus half the embedding time.
+  - **Rejected:** fault-injection code in the worker (chaos code in production, and still a config change), and a PDF too big for the 300 s timeout (fragile timing, and it could use up the 3 attempts and reach the DLQ).
+- **"Matches a clean run" is checked by content,** not only by count: the MD5 of the chunk texts in `chunk_index` order equals the clean run's, which equals a local parse of the same file.
+- **The synthetic PDF is seeded and saved with `no_new_id`,** so the same `--pages` gives the same bytes. Every paragraph carries its own numbers, so no two chunks share text.
+- **Cleanup goes through the deployed `DELETE /v1/documents/{id}`,** which also runs step 21's purge on the deployed worker.
+- **Results** (2026-11-25, image `83c37e3`): every row passed. Details are in `docs/runbooks/chaos.md` and the README's "Resilience" section.
+  - **Crash:** killed at 41 s with 160 of 305 chunks written. The redelivery 30 minutes later re-claimed the version (`attempts` 2), and it ended with 305 chunks whose content hash equals the clean run's.
+  - **Reranker down:** context recall drops from 98% to 90%.
+  - **Cleanup:** all 4 documents were deleted through the deployed API and purged by the deployed worker.
+  - **Afterwards:** timeout 300 s, DLQ empty, alarm `OK`, and `terraform plan` shows no changes.
+- **From the code review** (2026-11-25):
+  - **Fixed:**
+    - **The runbook's `trap` would only fire when an interactive shell exited.** The crash section is now a subshell. In this run the trap and the ingest were in one shell call, so the timeout was restored as intended.
+    - **`duplicate` slept a fixed 30 s,** so "unchanged" couldn't tell "skipped" from "not delivered yet". It now waits for the worker's log line for that job ID. The row was rerun this way and passed.
+    - **`watch()` ended a run on one 5xx or 429.** Those and network errors are now counted and polled again; a 401 still raises.
+    - **The delta test asserted inside `gather()`** (a failure would close the pool under running requests). Errors are now collected and asserted after.
+    - **The delta's context size was hard-coded.** It's now the baseline's `meta.context_chunks`, which the baseline records.
+    - **Type hints** on the script's command functions.
+    - **`duplicate` minted a token it never used.**
+    - **The test copied a script loader.** It now reuses `tests.leak.matrix.load_script`, and its `sys.modules` entry is removed after loading.
+    - **An unclosed httpx client** in the reranker test.
+  - **Kept as is:** the runbook restores 300 s instead of a value read beforehand. 300 s is what Terraform sets, and `terraform plan` checks it.
+
 ## 2026-11-25: Step 22, query cache with epoch invalidation
 
 - **Flow** (`services/api/cache.py`, wired into `api/query.py`):

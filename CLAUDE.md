@@ -175,7 +175,7 @@ Same rules as Slices 1 and 2 (DECISIONS 2026-11-24, "Slice 3 step list"). Step 1
   *Done when:* DB tests show a deleted document never appears in `/v1/retrieve` or `/v1/query`, the purge job is idempotent (run twice, crash halfway), another tenant's or a higher role's document can't be deleted, and the endpoint tests pass.
 - [x] **22. Query cache with epoch invalidation.** SPEC: Query path, "Cache": key = SHA-256 of tenant, role level, normalized query, tenant epoch and prompt version; the unlogged `query_cache` table; 24-hour TTL; only validated, non-degraded answers are cached. A cache hit is a span attribute and a `cached` field in the response.
   *Done when:* tests cover a hit, a miss, an epoch bump (activation or delete) invalidating, a role level never reading another level's entry (RLS), a degraded answer never cached, and the delete-through-cache test from SPEC.
-- [ ] **23. Chaos table.** Every row of SPEC: Proof, "Chaos tests": queue and worker rows on the deployed stack with a dedicated test tenant, dependency rows in CI with faulty fakes, including the DB statement timeout giving 503 with `Retry-After`.
+- [x] **23. Chaos table.** Every row of SPEC: Proof, "Chaos tests": queue and worker rows on the deployed stack with a dedicated test tenant, dependency rows in CI with faulty fakes, including the DB statement timeout giving 503 with `Retry-After`.
   *Done when:* every row passes, the results are written up (the Slice 3 post), and every Slice 3 box in SPEC: Slices is ticked.
 
 Not scheduled (decide when they come up): footnote-aware PDF parsing (DECISIONS 2026-11-24, finding; needs a new chunker version and a corpus re-ingest), `POST /v1/feedback` and `GET /healthz`, and reindex (blocked on Open decision #8).

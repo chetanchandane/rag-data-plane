@@ -36,3 +36,19 @@ Latest run (2026-11-24, on the recreated `eval` branch; the same matrix passes i
 
 Every answer's quotes are checked against the source text: an answer that fails twice becomes an abstain, never an unverified answer. The quality gate (`tests/eval/`; `eval.yml` once its AWS role is applied) fails a run if context recall, faithfulness, answer relevance or the primary model's own citation validity drops more than 3 points from this baseline, or if citation validity falls below 95% (temporary; SPEC's target is 98%) or abstain precision below 80%. Latency, cost and refusals are reported, not gated. Side by side with the earlier Qdrant pipeline, ClinRAG (faithfulness 0.79, answer relevance 0.75, context recall 0.89, median 15.2 s), on different documents and questions: `eval/README.md`.
 
+
+## Resilience
+
+Every row of SPEC's chaos table passes (step 23). The dependency faults run in CI against the app with faulty fakes injected (`tests/api/test_chaos.py`). The queue and worker faults ran on the deployed stack as a dedicated test tenant (`docs/runbooks/chaos.md`, 2026-11-25, image `83c37e3`).
+
+| Fault | What happened |
+| --- | --- |
+| Worker killed halfway through embedding | A real Lambda timeout killed the worker with 160 of 305 chunks written. SQS redelivered the message 30 minutes later and the worker re-claimed the expired lease and finished. The result is 305 chunks, no duplicates, and the content hash equals a clean run's |
+| Same message delivered twice | The worker skipped it: same chunks, 1 attempt |
+| v2 finishes before v1 | v2 is live 3.5 s after upload. v1 finishes 40 s later, loses activation (`superseded`), and its chunks are removed. `active_version` stays 2 |
+| Corrupt PDF | `failed` after 1 attempt (`unparseable_pdf`), straight to the DLQ with the reason, and the alarm emailed about 2 minutes later |
+| Reranker unreachable | 200 in RRF order, `degraded: ["reranker"]`. Context recall drops from **98% to 90%** (12 of 150 answerable questions lose their supporting chunk from the top 5), measured free on the eval set |
+| Primary LLM returns 5xx | The secondary answers, `degraded: ["llm_primary"]`. With both down, the response is a 200 abstain (`llm_unavailable`), never a 500, and never more than two LLM calls |
+| Postgres statement timeout | Postgres cancels the statement at 2 s, and the API answers 503 with `Retry-After: 1` |
+
+Each failing dependency (query embedding, reranker, primary LLM) has a circuit breaker, per Lambda instance: 5 failures in 30 s skip it for 30 s, with the same fallback and flag. Answers are cached until the tenant's index changes: any activation or delete moves the cache key on, so a deleted document never comes back through the cache.
