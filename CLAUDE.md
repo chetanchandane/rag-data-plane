@@ -180,7 +180,22 @@ Same rules as Slices 1 and 2 (DECISIONS 2026-11-24, "Slice 3 step list"). Step 1
 
 Not scheduled (decide when they come up): footnote-aware PDF parsing (DECISIONS 2026-11-24, finding; needs a new chunker version and a corpus re-ingest), `POST /v1/feedback` and `GET /healthz`, and reindex (blocked on Open decision #8).
 
-Slice 4 gets its own step list here once Slice 3 is done.
+## Build plan: Slice 4 (scale evidence)
+
+Same rules as before (DECISIONS 2026-11-25, "Slice 4 step list"). SLO targets come from the load test, so the dashboard and alarms follow it. Paid runs and anything that changes AWS need Chetan's go-ahead in that session, with the expected cost.
+
+- [ ] **24. Load-test prerequisites.** Chetan requests a higher Lambda "Concurrent executions" quota in Service Quotas (the account limit is 10). A `loadtest` tenant in production gets the 12 FDA guidances through the real ingest path (Titan, about $0.02). k6 is installed (`brew install k6`). The stage throttle becomes a Terraform variable, so it can be raised for the load window only (25 requests/s, burst 50) and put back.
+  *Done when:* the quota is raised, the corpus is `indexed`, and a 10-request k6 smoke run against the deployed `/v1/retrieve` returns 200s.
+- [ ] **25. Metrics for the SLOs.** CloudWatch EMF from both Lambdas. The API: latency by route, status class, `degraded` and cache hit. The worker: seconds from upload to `indexed` (ingestion freshness). Keep it to about 8 custom metrics (about $2 a month).
+  *Done when:* unit tests check the emitted EMF shape, and after a deploy the metrics show up in CloudWatch.
+- [ ] **26. k6 load tests.** `load/retrieve_ramp.js` and `load/query_mix.js` exactly as SPEC: Proof, "Load test (k6)". Run from the laptop, with the throttle raised; plus one 30 s run at 20 requests/s against the real throttle, showing the 429s. One run from a cold Neon compute and one warm. Results in `load/results/`: p50/p95/p99, error rate, peak Lambda concurrency, cache hit rate, cost per 1,000 queries, with retrieval and end-to-end separate. About $0.80.
+  *Done when:* both runs are committed, the throttle is back to 10/20 with `plan` clean, and SPEC's SLO targets are confirmed or revised in DECISIONS.
+- [ ] **27. SLO dashboard and alarms.** Terraform: a CloudWatch dashboard (p95 per route, availability, freshness, DLQ depth, concurrency, throttles) and alarms on the confirmed targets to the existing SNS topic. Chetan applies.
+  *Done when:* `plan` is clean after the apply, and a deliberately breached threshold fires an alarm email.
+- [ ] **28. Scale probe.** On a throwaway Neon branch, recall SQL latency at 10k, 25k and 50k chunks with synthetic vectors (Neon's free plan caps storage at 0.5 GB), exact scan against HNSW with iterative scan, under RLS as `app_api`. Free: no Titan.
+  *Done when:* the numbers are committed and show where exact scan crosses the `/v1/retrieve` p95 target.
+- [ ] **29. "At 100x" note and README.** `docs/at-100x.md`, one page: for each item in SPEC's list, what breaks first, the signal that shows it, and the change, with steps 26 and 28's numbers. The README leads with an architecture diagram (Mermaid), the measured numbers and a one-command setup (`scripts/setup.sh`: a fresh clone to passing unit tests), and its eval table is brought up to date.
+  *Done when:* every Slice 4 box in SPEC: Slices is ticked.
 
 <!-- BEGIN AWS Agent Toolkit rules -->
 

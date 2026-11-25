@@ -2,6 +2,24 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-25: Slice 4 step list
+
+- **Steps 24 to 29** (Chetan, 2026-11-25), in CLAUDE.md: load-test prerequisites, metrics for the SLOs, the k6 load tests, the SLO dashboard and alarms, a scale probe, and the "At 100x" note with the README.
+- **Why this order:**
+  - **Prerequisites first,** because the Lambda quota increase is a request to AWS that can take days. The account limit of 10 was already flagged for this in step 8.
+  - **Metrics before the load test,** so the load test also checks them: per-route latency and the cache hit rate come out of the same run.
+  - **The dashboard and alarms after the load test,** because SPEC's SLO targets are "to confirm with the first load test".
+  - **The note and the README last,** because they quote everything above.
+- **The stage throttle during the ramp** (Chetan, 2026-11-25): SPEC's `retrieve_ramp` goes to 20 requests/s, and the stage throttles at 10 (burst 20). It becomes a Terraform variable, raised to 25/50 for the load window only and put back afterwards, so the ramp measures Lambda and Neon. One extra 30 s run at 20 requests/s against the real throttle shows API Gateway rejecting the excess with 429s before any Lambda runs.
+  - **Rejected:** capping the ramp at 10 requests/s. It needs no apply, but it changes SPEC's ramp and measures less.
+- **k6 runs from the laptop** (Chetan, 2026-11-25). k6 is light, and the report says the latencies are client-side and include the internet hop to us-east-2.
+  - **Rejected:** GitHub Actions. The network is cleaner, but each run would need a token minted in CI, which isn't set up.
+- **Per-route metrics come from CloudWatch EMF** in both Lambdas (Chetan, 2026-11-25). API Gateway's free stage metrics can't split `/v1/retrieve` from `/v1/query`. Its per-route detailed metrics cost about as much and can't carry `degraded` or cache hits. EMF needs no new infrastructure. About 8 custom metrics is about $2 a month.
+- **The scale probe stops at 50k chunks,** because Neon's free plan caps storage at 0.5 GB (1024-dimension vectors are about 4 KB each before indexes). The note extrapolates beyond that and says so.
+- **"One-command setup" means a fresh clone to passing unit tests** (`scripts/setup.sh`: `uv sync`, `.env` from `.env.example`, `uv run pytest`). Deploying needs Chetan's AWS account and Neon project, so it stays a runbook.
+- **Expected spend:** about $1 to $2 one-off (the ingest, the load tests), plus about $2 a month for metrics.
+- **Not scheduled:** the per-tenant daily token quota SPEC mentions as a second layer behind the throttle, footnote-aware parsing, `/v1/feedback` and `/healthz`, and reindex (Open decision #8).
+
 ## 2026-11-25: Step 23, the chaos table
 
 - **Split as SPEC says** (Chetan, 2026-11-25):
