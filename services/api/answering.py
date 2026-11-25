@@ -37,8 +37,8 @@ from api.retrieval import RetrievalResult, RetrievedChunk
 log = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
-# Part of the cache key later (SPEC: Query path, "Cache"): change it whenever the prompt
-# or the answer schema changes, so an answer from the old prompt is never served.
+# Part of the cache key (api/cache.py, answer_version): change it whenever the prompt or the
+# response schema changes, so an answer from the old prompt is never served from the cache.
 PROMPT_VERSION = "2026-11-24.1"
 
 SYSTEM_PROMPT = f"""\

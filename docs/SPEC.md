@@ -493,7 +493,8 @@ Circuit breakers (query embedding, reranker, primary LLM) open after 5 failures 
   "degraded": [],
   "top_rerank_score": 0.82,
   "trace_id": "string",
-  "usage": {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+  "usage": {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+  "cached": false
 }
 ```
 
@@ -505,7 +506,7 @@ Circuit breakers (query embedding, reranker, primary LLM) open after 5 failures 
 
 A failure on the primary's answer counts as unusable output, like a malformed response: the secondary model gets its one try (DECISIONS 2026-11-24, "Citation failure fails over"). If the answer that was checked last fails too, the result is an abstain with `citation_check_failed`. Never more than two LLM calls. Count failures in telemetry (the `citation_check` span, per attempt); a rising rate means the prompt or model regressed.
 
-**Cache.** Key = SHA-256 of `tenant_id | role_level | normalized query | tenant epoch | prompt version`. Stored in the unlogged `query_cache` table with a 24-hour TTL. Any activation or delete bumps the epoch, so stale answers can't be served. Only validated, non-degraded answers are cached.
+**Cache.** Key = SHA-256 of `tenant_id | role_level | normalized query | tenant epoch | answer version`. The answer version is the prompt version plus the models and settings that shape an answer (embedding, reranker, both LLMs, the primary's effort, the abstain threshold, the context-chunk count). The normalized query has its whitespace trimmed and collapsed, and its case kept. Recall and the prompt use that same text. Stored in the unlogged `query_cache` table with a 24-hour TTL. Any activation or delete bumps the epoch, so stale answers can't be served. The key uses the epoch read before recall, and the store reuses that key. Only validated, non-degraded answers are cached, never abstains. A hit returns `cached: true`, zero `usage` and the request's own `trace_id`. A failed store is skipped, and the answer is still returned. Details: DECISIONS 2026-11-25, "Step 22".
 
 ## Infrastructure
 
@@ -681,7 +682,7 @@ Post: the leak matrix and what pgvector + RLS changed versus the Qdrant pipeline
 ### Slice 3: Resilience (2 to 3 days)
 
 - [ ] Timeouts, fallbacks, circuit breakers and `degraded` flags in place
-- [ ] Cache with epoch invalidation; delete test passes through the cache
+- [x] Cache with epoch invalidation; delete test passes through the cache
 - [ ] Every row of the chaos table passes; results written up
 
 Post: what the API does when the reranker or the LLM goes down.

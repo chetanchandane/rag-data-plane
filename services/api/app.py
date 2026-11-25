@@ -13,7 +13,6 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import asyncpg
 import boto3
 import httpx
 from botocore.config import Config
@@ -26,7 +25,7 @@ from api.config import RETRY_AFTER_SECONDS, Settings
 from api.llm import llm_generate
 from api.rerank import CohereReranker, Reranker, cohere_api_key
 from api.uploads import make_s3_client
-from shared.db import create_pool
+from shared.db import DB_UNAVAILABLE, create_pool
 from shared.embedding import embed_text, query_client
 from shared.telemetry import setup_tracing
 
@@ -36,16 +35,6 @@ DB_COMMAND_TIMEOUT_SECONDS = 3
 # Long enough for Neon to wake a suspended compute, well inside the Lambda's 15 s.
 DB_CONNECT_TIMEOUT_SECONDS = 10
 
-# Postgres is unreachable or too slow: the client should retry (SPEC: "Dependencies,
-# timeouts and fallbacks", Postgres row). Everything else is a bug and stays a 500.
-DB_UNAVAILABLE = (
-    asyncpg.PostgresConnectionError,  # includes a connection that died while frozen
-    asyncpg.CannotConnectNowError,
-    asyncpg.TooManyConnectionsError,
-    asyncpg.QueryCanceledError,  # statement_timeout
-    TimeoutError,  # command_timeout or connect timeout
-    ConnectionError,  # refused or reset while connecting
-)
 log = logging.getLogger(__name__)
 
 
@@ -135,6 +124,7 @@ def create_app() -> FastAPI:
     app.include_router(retrieve.router)
     app.include_router(query.router)
     app.include_router(whoami.router)
+    # Postgres unreachable or too slow: 503, the client retries. Anything else stays a 500.
     for exc_class in DB_UNAVAILABLE:
         app.add_exception_handler(exc_class, _database_unavailable)
     return app

@@ -2,6 +2,47 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-25: Step 22, query cache with epoch invalidation
+
+- **Flow** (`services/api/cache.py`, wired into `api/query.py`):
+  1. **Lookup, before recall.** One `rls_transaction`: read the tenant's epoch, compute the key, then `SELECT response … WHERE cache_key = $1 AND expires_at > now()`. A hit returns at once and calls no embedding, reranker or LLM.
+  2. **On a miss,** the pipeline runs unchanged.
+  3. **Store** a cacheable answer with an upsert (`ON CONFLICT DO UPDATE`, so an expired row under the same key gets replaced), `expires_at = now() + 24 h`. The same transaction first deletes this tenant and role level's expired rows.
+- **The store reuses the key from the lookup and never reads the epoch again.** This is the ordering that makes the epoch safe. Recall always runs after the transaction that set the epoch it read. So an answer stored under epoch E contains nothing hidden before E, and if a delete or activation commits mid-request, lookups have already moved to E + 1. If the epoch were read after recall instead, an answer built from a just-deleted document could land under the new epoch and be served. Test: `test_an_answer_stored_after_an_epoch_bump_is_never_served`. Dropping the epoch from the key makes it, the activation test and the delete-through-cache test fail, which was checked by mutation.
+- **Key = SHA-256 of a JSON list** `[tenant_id, role_level, normalized query, epoch, answer version]`. The JSON encoding is there so no query text can make two different sets of parts produce the same string. A plain `|` join could.
+- **The answer version replaces SPEC's "prompt version"** (Chetan, 2026-11-25). It is `PROMPT_VERSION` plus the embedding and rerank model IDs, both LLM IDs, the primary's effort, the abstain threshold and the context-chunk count. Why: with the prompt version alone, a deploy that switches a model or a threshold would keep serving the old configuration's answers for up to 24 h. Rejected: bumping `PROMPT_VERSION` by hand on each such change, which is easy to forget.
+- **Normalization is whitespace only:** trimmed, with runs collapsed to one space. `/v1/query` sends the normalized text through recall and the prompt as well, so two requests with the same key get exactly the same inputs. Case is kept because the lexical weight is case-sensitive (`[A-Z]{1,4}-?\d{2,6}`), so "ICH E10" and "ich e10" can recall differently, and a casefolded key could serve an answer the request itself wouldn't produce. Rejected: casefolding and NFKC, which give more hits but risk a different answer.
+- **What's cached** (Chetan, 2026-11-25):
+  - **Only non-abstained answers with `degraded == []`.** Every answer that exists has passed the citation check, so "validated" holds by construction.
+  - **No abstains.** A model's `not_in_documents` could be wrong, and caching it would pin it for a day. The deterministic abstains (`no_results`, `low_relevance`) cost no LLM call, so caching them would save little.
+  - **No `citation_retry` answers,** although they passed validation. SPEC counts the flag as degraded, and the rule stays literal.
+- **What's stored:** the response without `trace_id`, `usage` and `cached`.
+  - **A hit returns** `cached: true`, this request's `trace_id` and zero `usage`. Cost per tenant counts what was spent, and a hit spends nothing.
+  - **A stored entry that no longer fits the response schema is a miss,** and the next answer overwrites it. `PROMPT_VERSION` is meant to change with the schema, and this keeps a forgotten bump from becoming a day of 500s.
+- **Failures:**
+  - **Lookup:** a database error is a 503, like any Postgres failure. The request needs Postgres for recall anyway.
+  - **Store:** best effort. The answer is already paid for, so a database error leaves it uncached rather than failing the request. "Database unavailable" errors are logged at WARNING. Any other Postgres error (an RLS violation, a value `jsonb` won't take) is a bug and is logged at ERROR with its traceback. Both set `cache.error` on the `cache_store` span. Errors outside the database still raise.
+  - That list of errors moved from `api/app.py` to `shared.db.DB_UNAVAILABLE`, so the cache can use it without an import cycle.
+- **Isolation, twice:** tenant and role level are in the key, and `query_cache`'s RLS policy matches only this tenant and this exact role level. The tests show that level 2 can't read level 3's row even when it asks by the exact key, and that another tenant misses.
+- **The epoch query filters on `tenant_id = $1` as well as RLS.** It's a single-row read, and if a policy were ever wrong, `fetchval` would otherwise take an arbitrary tenant's epoch.
+- **No cleanup job.** Neon keeps unlogged tables on the compute's local storage, so they're emptied whenever the compute restarts, idle suspend included (Neon docs, "Postgres compatibility"). Under steady traffic the compute doesn't suspend, and every epoch bump orphans a tenant's entries. So each store also runs `DELETE FROM query_cache WHERE expires_at <= now()`, scoped by RLS to the caller's tenant and role level. That bounds the table to about a day of entries. A sweeper would be new scheduled compute.
+  - **Trade-off:** the hit rate resets after every idle period. At demo traffic that's fine. Slice 4's k6 `query_mix` (70% repeats) will measure it.
+  - **Test tenants' cache rows** are left in place for the same reason. `app_ingest` has no grant on `query_cache`, and the rows' tenants are random.
+- **`Settings.query_cache`** (default on, not read from the environment). The eval run and the paid `/v1/query` leak check turn it off. A second eval within 24 h would otherwise score cached answers (zero cost, and no `citation_check` spans for the gate), and the leak check must reach the models on every run. The shared-breakers unit test turns it off too, because its fake pool only answers recall.
+- **Telemetry:** a `cache_lookup` span (`cache.found`: a live row exists; `cache.epoch`) and a `cache_store` span (`cache.error`). On the `query` span, `cache.enabled` and `cache.hit` (served from the cache). Never the query or the answer.
+- **Response schema:** a new `cached` field, added to SPEC's schema.
+- **From the code review** (2026-11-25):
+  - **Fixed:**
+    - **The key used the normalized query while recall and the prompt got the raw one.** Two requests sharing a key could have had different inputs. The normalized text now goes through the whole pipeline. The golden questions are already normalized (190 of 190), so the eval's fixture embedder still finds them.
+    - **A Postgres error other than "unavailable" on the store was a 500 after a paid answer** (for example, `jsonb` rejecting a NUL in the answer). It's now logged at ERROR and skipped.
+    - **Nothing removed rows orphaned by an epoch bump under steady traffic.** Each store now deletes the caller's expired rows.
+    - **`cache.hit` was set on two spans and could disagree** (a row that no longer fits the schema). The lookup span now says `cache.found`, and `cache.hit` is only on the `query` span.
+  - **Kept as is, with reasons:**
+    - **The lookup reads the epoch and the row in two READ COMMITTED statements.** A DELETE can commit between them, and the row read can then see an entry stored under the old epoch. But the request read the epoch before that DELETE committed, so it is concurrent with the DELETE and can be ordered before it, just as its recall could have run a moment earlier with no cache. A request sent after the DELETE's 202 reads the new epoch and never sees it. SPEC's "disappears immediately" holds. Rejected: a REPEATABLE READ lookup or an epoch computed in SQL, which make the code harder to explain and change nothing a client can observe.
+    - **Code changes that shape answers (RRF, the lexical-weight rule, citation rules) still need a `PROMPT_VERSION` bump.** Adding the deployed git SHA to the answer version would cover them, but it needs a new Lambda environment variable through Terraform and `deploy.yml`, which is a change for Chetan to apply. The exposure is bounded by the 24 h TTL and the compute's suspend. Revisit if a deploy serves a stale answer.
+    - **The cache adds two short transactions to a miss.** That's milliseconds of Neon time against seconds of LLM time. The store stays synchronous, because Lambda freezes the container once the response is sent, so a fire-and-forget write could be lost or run at the next invocation. Merging the lookup into recall's transaction would put the embedding call inside an open transaction.
+    - **`answer_version()` is rebuilt on every request.** It's one small `json.dumps`, and a pure function of the settings is easier to follow than a value cached on `app.state`.
+
 ## 2026-11-24: Step 21, `DELETE /v1/documents/{id}` and the delete job
 
 - **A delete while a version is being ingested** (Chetan, 2026-11-24): once `deleted_at` is set, no new ingest starts. One already running finishes but never activates, and the purge waits for its lease.

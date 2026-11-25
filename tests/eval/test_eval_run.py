@@ -197,8 +197,9 @@ async def test_eval_run(spans):
     pool = await create_pool(db_url("EVAL_DATABASE_URL_API"), max_size=PARALLEL)
     try:
         app = build_app(pool, persona.tenant_id, persona.role_level)
+        # No cache: a run within a day of another would score its cached answers.
         app.state.settings = settings = make_settings(
-            llm_primary_model_id=primary, llm_secondary_model_id=secondary
+            llm_primary_model_id=primary, llm_secondary_model_id=secondary, query_cache=False
         )
         app.state.embed_query = matrix.fixture_embedder()
         app.state.generate = llm_generate(REGION)

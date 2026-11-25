@@ -47,6 +47,10 @@ class Settings:
     # The token issuer the API verifies tokens against when no API Gateway is in front
     # (api/auth.py). Not set on Lambda: there API Gateway's authorizer verifies them.
     jwt_issuer: str | None = None
+    # The /v1/query cache (api/cache.py). Always on in the API; not read from the
+    # environment. The eval and the paid leak check turn it off, so they measure the models
+    # rather than answers cached by an earlier run (DECISIONS 2026-11-25, "Step 22").
+    query_cache: bool = True
 
     @classmethod
     def from_env(cls, ssm=None) -> "Settings":

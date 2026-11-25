@@ -14,7 +14,7 @@ from api import retrieval
 from api.breaker import Breakers, CircuitBreaker
 from api.llm import ModelAnswer
 from api.rerank import rerank_chunks
-from tests.api.apphelpers import build_app, client
+from tests.api.apphelpers import build_app, client, make_settings
 from tests.api.test_answering import (
     GOOD,
     PEP,
@@ -403,6 +403,7 @@ async def test_the_endpoints_share_one_set_of_breakers_per_app():
     # Per dependency, not per endpoint: /v1/retrieve's embedding failures open the breaker
     # that /v1/query uses too. Each app (on Lambda, each instance) has its own.
     app = build_app(FakeRows(), uuid.uuid4(), 1)
+    app.state.settings = make_settings(query_cache=False)  # FakeRows only answers recall
     embed = FailingEmbedder()
     app.state.embed_query = embed
     async with client(app) as c:

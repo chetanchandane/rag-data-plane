@@ -3,18 +3,24 @@ schema"; DECISIONS 2026-11-22, "Step 15").
 
 Tenant and role level come only from get_claims(). Recall runs under RLS with them, so the
 reranker and the LLM only ever see chunks the caller may see.
+
+The cache (api/cache.py) is checked before recall. A hit returns the stored answer with
+`cached: true` and calls no embedding, reranker or LLM. A miss runs the pipeline and stores
+the answer if it is validated and not degraded.
 """
 
+import logging
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, Request
 from opentelemetry import trace
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from api.answering import AnswerConfig, answer_query
+from api import cache
+from api.answering import AnswerConfig, QueryAnswer, answer_query
 from api.auth import Claims, get_claims
 from api.breaker import Breakers
 from api.config import Settings
@@ -25,6 +31,7 @@ from api.retrieval import MAX_TOP_K, EmbedQuery, retrieve
 from api.retrieve import MAX_QUERY_CHARS, get_embed_query, get_reranker
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 
@@ -64,6 +71,14 @@ class QueryResponse(BaseModel):
     top_rerank_score: float | None  # null when the reranker didn't run
     trace_id: str
     usage: UsageOut
+    # True: served from the cache. trace_id is this request's, and usage is zero, because
+    # no model was called (cost per tenant counts only what was spent).
+    cached: bool
+
+
+# Not stored in the cache: they describe the request, not the answer.
+_PER_REQUEST_FIELDS = {"trace_id", "usage", "cached"}
+_NO_USAGE = UsageOut(input_tokens=0, output_tokens=0, cost_usd=0.0)
 
 
 def get_generate(request: Request) -> Generate:
@@ -96,18 +111,36 @@ async def query_documents(
     generate: Annotated[Generate, Depends(get_generate)],
     breakers: Annotated[Breakers, Depends(get_breakers)],
 ) -> QueryResponse:
+    # The same text for the key, recall and the prompt: one key, one set of inputs.
+    query = cache.normalize_query(body.query)
     with tracer.start_as_current_span("query") as span:
+        trace_id = _trace_id(span)
+        span.set_attribute("cache.enabled", settings.query_cache)
+        lookup = None
+        if settings.query_cache:
+            lookup = await cache.lookup(
+                pool,
+                claims.tenant_id,
+                claims.role_level,
+                query,
+                cache.answer_version(settings),
+            )
+            hit = _from_cache(lookup.response, trace_id) if lookup.response else None
+            span.set_attribute("cache.hit", hit is not None)
+            if hit is not None:
+                return hit
+
         recalled = await retrieve(
             pool,
             embed_query,
             breaker=breakers.embedding,
-            query=body.query,
+            query=query,
             top_k=MAX_TOP_K,
             tenant_id=claims.tenant_id,
             role_level=claims.role_level,
         )
         result = await answer_query(
-            body.query,
+            query,
             recalled,
             reranker=reranker,
             generate=generate,
@@ -123,8 +156,15 @@ async def query_documents(
                 ),
             }
         )
-        trace_id = _trace_id(span)
+        response = _response(result, trace_id)
+        if lookup is not None and cache.is_cacheable(result):
+            # lookup.key, not a new key: it holds the epoch read before recall (api/cache.py).
+            stored = response.model_dump(mode="json", exclude=_PER_REQUEST_FIELDS)
+            await cache.store(pool, claims.tenant_id, claims.role_level, lookup.key, stored)
+    return response
 
+
+def _response(result: QueryAnswer, trace_id: str) -> QueryResponse:
     return QueryResponse(
         answer=result.answer,
         abstained=result.abstained,
@@ -138,7 +178,21 @@ async def query_documents(
             output_tokens=result.output_tokens,
             cost_usd=result.cost_usd,
         ),
+        cached=False,
     )
+
+
+def _from_cache(stored: dict[str, Any], trace_id: str) -> QueryResponse | None:
+    """The stored answer as this request's response, or None if it no longer fits the
+    schema. PROMPT_VERSION should change with the schema; if a change forgets that, the
+    entry is a miss (and gets overwritten), not a day of 500s."""
+    try:
+        return QueryResponse.model_validate(
+            stored | {"trace_id": trace_id, "usage": _NO_USAGE, "cached": True}
+        )
+    except ValidationError:
+        log.warning("cached query response no longer fits the schema; treated as a miss")
+        return None
 
 
 def _trace_id(span: trace.Span) -> str:

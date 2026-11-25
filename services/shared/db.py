@@ -14,6 +14,18 @@ from pgvector.asyncpg import register_vector
 # The app may only connect as these roles. Both are NOBYPASSRLS; the owner roles are not.
 APP_ROLES = frozenset({"app_api", "app_ingest"})
 
+# Postgres is unreachable or too slow, as opposed to a bug. The API answers these with a
+# 503 and Retry-After (SPEC: "Dependencies, timeouts and fallbacks", Postgres row); the
+# query cache's write skips them (api/cache.py).
+DB_UNAVAILABLE: tuple[type[BaseException], ...] = (
+    asyncpg.PostgresConnectionError,  # includes a connection that died while frozen
+    asyncpg.CannotConnectNowError,
+    asyncpg.TooManyConnectionsError,
+    asyncpg.QueryCanceledError,  # statement_timeout
+    TimeoutError,  # command_timeout or connect timeout
+    ConnectionError,  # refused or reset while connecting
+)
+
 # SPEC: Query path, "Postgres: 2 s statement timeout".
 API_STATEMENT_TIMEOUT_MS = 2_000
 # The worker's statements are heavier (bulk chunk inserts, cleanup of superseded chunks).
