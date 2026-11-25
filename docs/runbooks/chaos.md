@@ -172,4 +172,5 @@ Before: worker timeout 300 s, DLQ 0, alarm `OK`, max concurrency 2. After: the s
 Noticed:
 - **The kill window is narrow.** The embed phase is about 7.5 s of a 46 s invocation, because parsing dominates. The 41 s timeout landed after 5 of 10 batches on the first try.
 - **`lease_until` is left in the future after a version is indexed** (`lease_live: true` on `indexed` rows). Harmless: the claim only re-claims `parsing`/`embedding` with an expired lease, and nothing reads the lease of an `indexed` version.
+- **Reranker-down delta** (CI side, recorded here for the write-up): `eval/results/2026-11-25_76d9e07a9af8_no_rerank.json`. Context recall with RRF top 5 is 90.0% against the baseline's reranked 98.0%, and recall@30 is 98.0% on both.
 - **Not verified here:** `ingest.chunks_to_embed` on the resumed trace in Honeycomb (expected 145). The resume logic itself is step 6's tested guarantee; this run shows it on the deployed path (SQS redelivery after a real kill, lease expiry, re-claim).
