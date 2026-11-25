@@ -2,6 +2,32 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-24: Step 20, circuit breakers
+
+- **Three breakers, one per dependency** (Chetan, 2026-11-24): the query embedding, the reranker and the primary LLM, in `services/api/breaker.py`. While a breaker is open, its dependency is skipped and the fallback that a failure would reach runs instead, with the same flag: lexical-only recall (`embedding`), RRF order (`reranker`), the secondary model (`llm_primary`). The breaker only decides whether to make the call. The fallbacks and flags are step 14's and 15's, unchanged.
+- **A failure is exactly what triggers the fallback:**
+  - **Embedding:** a Bedrock error after its one retry, so a request counts once.
+  - **Reranker:** any `RerankError`. No key configured isn't a call, so it never counts.
+  - **Primary:** an error, a timeout or unusable output.
+  - **Not failures:** an answer that fails the citation check (2026-11-24, "Citation failure fails over"), `answerable: false` (a decision), and errors that are bugs, such as a wrong embedding size (raised as before).
+- **Closed: a sliding 30 s window of failure times. A success doesn't reset it.** SPEC says "5 failures in 30 s", and a dependency that fails every other call should still trip it. Rejected: 5 failures in a row, which one lucky success keeps resetting.
+- **Half-open lets one trial call through.** Other calls skip until it ends. Success closes the breaker and clears the window. Failure reopens it for another 30 s.
+  - **A trial that ends with no verdict is released,** so the next call becomes the trial. This covers a cancelled request, or a bug raising something unclassified. Without the release, one cancelled request could leave the dependency skipped for good on that instance.
+  - **A late result from a call allowed before the breaker opened changes nothing.** Only the trial decides.
+- **No breaker on the secondary.** SPEC names three dependencies, and the secondary's fallback is already an abstain, so a breaker would only make a doomed call fail sooner. With the primary's breaker open and the secondary down, every query abstains (`llm_unavailable`) after one secondary attempt.
+- **One set per app, built in `create_app()`** and kept on `app.state`. That's one set per Lambda instance, as SPEC says, and every test app starts with closed breakers. `/v1/retrieve` and `/v1/query` share it, because a breaker belongs to a dependency, not to an endpoint.
+- **No lock.** Attempts start and end on the event loop, never on the worker threads that run boto3, and asyncio runs one thing at a time.
+- **Telemetry:** `breaker.state` (`closed`, `open`, `half_open`; the state when the call was decided) on the `embed`, `rerank` and primary `llm_generate` spans. A skipped call sets that span's error attribute to `breaker_open` (`embed.error`, `rerank.error`, `llm.error`). The primary's `llm_generate` span is still created when it's skipped, so a trace shows why. Opening and reopening are logged at WARNING, closing at INFO.
+- **Trade-off (SPEC):** state is per instance. A new instance has to see its own 5 failures before it stops calling a dead dependency. Shared state, in Postgres or Redis, would add a round trip and a failure point to every call. At demo traffic, with one to three instances, per instance is the better trade.
+- **Effect on the eval:** each eval run builds a fresh app, so its breakers start closed. The eval's reranker wrapper retries inside the reranker, so the breaker sees one outcome per request. Embeddings are fixtures. If the primary opened mid-run, the skipped requests would show `llm_primary` (not an invalidating flag), and the primary's own citation validity would come from fewer answers. That's production behaviour, so the harness is unchanged.
+- **From the code review** (2026-11-24):
+  - **Fixed:** `scripts/probe_backup.py` didn't pass the new `breaker` arguments.
+  - **Kept as is, with reasons:**
+    - **Malformed output and 4xx errors count as failures, although one tenant's requests could open a breaker for everyone on that instance.** The inputs are bounded (a query of at most 2,000 characters, 5 chunks of chunker size), so a 4xx caused by the request itself is unlikely. A 401 or 403 (a revoked key, lost model access) and a model that keeps returning unusable output are exactly the outages a breaker is for. The worst case is 30 s on the secondary or in RRF order, flagged, and never a leak or a 500. Revisit if the step 23 chaos runs or traces show breakers tripped by single requests.
+    - **The eval's reranker breaker opening mid-run** takes 5 requests that already lost the reranker, and those already make the run invalid. If the primary's breaker opens mid-run, that's production behaviour.
+    - **One shared guard helper for the three call sites.** Each site has its own failure rule, so a helper taking callbacks would be harder to read than three 10-line blocks. The context manager already makes a forgotten verdict safe: the trial is released.
+    - **A `breaker.trial` span attribute.** A skipped call already carries `breaker_open` in its error attribute, so `half_open` without it marks the trial.
+
 ## 2026-11-24: Step 19, the backup model stays; sentences split at page breaks are fixed instead
 
 - **The probe** (`scripts/probe_backup.py`, results in `eval/results/probes/`): the baseline's 14 citation-retry prompts plus 16 other answerable questions, each built by the API's own path (fixture embedding, recall under RLS as a-r1, Cohere rerank, the top 5, `build_prompt`), reranked once and sent identically to every model, with a 30 s read timeout so real latency shows. Three runs, $0.26 in all.

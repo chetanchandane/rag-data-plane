@@ -5,11 +5,13 @@ The query logic sees only the Reranker interface, so a workload that can't send 
 hosted API can swap in Bedrock Rerank or a self-hosted cross-encoder without touching it.
 Today's implementation is Cohere's hosted /v2/rerank.
 
-SPEC's budget: 1.5 s, no retry. On any failure the RRF order is kept and the caller adds
-degraded: ["reranker"]. Without a reranker there are no rerank scores, and the abstain gate
-must not compare RRF scores against its threshold (api/answering.py).
+SPEC's budget: 1.5 s, no retry. On any failure, or while the reranker's circuit breaker is
+open (api/breaker.py), the RRF order is kept and the caller adds degraded: ["reranker"].
+Without a reranker there are no rerank scores, and the abstain gate must not compare RRF
+scores against its threshold (api/answering.py).
 
-Span: rerank. Attributes are counts, scores and outcomes, never the query or chunk text.
+Span: rerank (with breaker.state when there's a call to decide). Attributes are counts,
+scores and outcomes, never the query or chunk text.
 """
 
 import asyncio
@@ -21,6 +23,7 @@ from typing import Any, Protocol
 import httpx
 from opentelemetry import trace
 
+from api.breaker import CircuitBreaker
 from api.retrieval import RetrievedChunk
 
 log = logging.getLogger(__name__)
@@ -119,9 +122,15 @@ class Reranked:
 
 
 async def rerank_chunks(
-    reranker: Reranker | None, query: str, chunks: list[RetrievedChunk], *, top_n: int
+    reranker: Reranker | None,
+    query: str,
+    chunks: list[RetrievedChunk],
+    *,
+    top_n: int,
+    breaker: CircuitBreaker,
 ) -> Reranked:
-    """The top_n chunks in rerank order, or in RRF order if the reranker can't be used."""
+    """The top_n chunks in rerank order, or in RRF order if the reranker can't be used. Any
+    RerankError counts toward the breaker; no key configured isn't a call, so it doesn't."""
     with tracer.start_as_current_span("rerank") as span:
         span.set_attributes({"rerank.candidates": len(chunks), "rerank.top_n": top_n})
         if not chunks:
@@ -129,12 +138,19 @@ async def rerank_chunks(
         if reranker is None:
             span.set_attribute("rerank.error", "not_configured")
             return _rrf_order(chunks, top_n)
-        try:
-            ranked = await reranker.rerank(query, [c.content for c in chunks], top_n)
-        except RerankError as error:
-            log.warning("rerank failed, keeping RRF order: %s", error)
-            span.set_attribute("rerank.error", str(error))
-            return _rrf_order(chunks, top_n)
+        with breaker.attempt() as attempt:
+            span.set_attribute("breaker.state", attempt.state)
+            if not attempt.allowed:
+                span.set_attribute("rerank.error", "breaker_open")
+                return _rrf_order(chunks, top_n)
+            try:
+                ranked = await reranker.rerank(query, [c.content for c in chunks], top_n)
+            except RerankError as error:
+                attempt.failed()
+                log.warning("rerank failed, keeping RRF order: %s", error)
+                span.set_attribute("rerank.error", str(error))
+                return _rrf_order(chunks, top_n)
+            attempt.succeeded()
 
         result = Reranked(
             chunks=[RankedChunk(chunks[index], score) for index, score in ranked], degraded=False

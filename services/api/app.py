@@ -20,6 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from api import documents, query, retrieve, whoami
+from api.breaker import Breakers
 from api.config import Settings
 from api.llm import llm_generate
 from api.rerank import CohereReranker, Reranker, cohere_api_key
@@ -118,6 +119,9 @@ async def _database_unavailable(request: Request, exc: Exception) -> JSONRespons
 
 def create_app() -> FastAPI:
     app = FastAPI(title="rag-data-plane", lifespan=lifespan)
+    # Built with the app, not in open_resources: one set per container (on Lambda, per
+    # instance, as SPEC says), and an app built for a test gets fresh, closed breakers.
+    app.state.breakers = Breakers()
     app.include_router(documents.router)
     app.include_router(retrieve.router)
     app.include_router(query.router)

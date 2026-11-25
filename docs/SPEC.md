@@ -461,7 +461,7 @@ LIMIT 30;
 | Primary LLM's answer fails the citation check | (DECISIONS 2026-11-24, "Citation failure fails over") | Secondary model, once | `degraded: ["citation_retry"]` |
 | Secondary LLM | 14 s | Abstain | `abstain_reason`: `citation_check_failed` if an answer failed the check, else `llm_unavailable` or `llm_output_invalid` |
 
-Circuit breakers open after 5 failures in 30 s and half-open after 30 s. On Lambda they are per instance, not global. That is a documented trade-off, and worth saying out loud in interviews.
+Circuit breakers (query embedding, reranker, primary LLM) open after 5 failures in 30 s and half-open after 30 s, letting one trial call through. While a breaker is open, its fallback runs with the same flag. What counts as a failure: DECISIONS 2026-11-24, "Step 20". On Lambda they are per instance, not global. That is a documented trade-off, and worth saying out loud in interviews.
 
 **Abstain before generating.** If the top rerank score is below a threshold tuned on the golden set's unanswerable questions, return an abstain without calling the LLM. It saves cost and is the main anti-hallucination control.
 

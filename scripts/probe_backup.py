@@ -52,6 +52,7 @@ from api.answering import (  # noqa: E402
     check_citations,
     normalize,
 )
+from api.breaker import Breakers  # noqa: E402
 from api.llm import LLM_TIMEOUTS, PRICES_PER_MILLION, LlmModel, generate  # noqa: E402
 from api.rerank import CohereReranker, rerank_chunks  # noqa: E402
 from api.retrieval import MAX_TOP_K, retrieve  # noqa: E402
@@ -234,19 +235,27 @@ async def main(extra: int, only_ids: list[str], models: list[str]) -> None:
     try:
         async with httpx.AsyncClient() as http:
             reranker = CohereReranker(http, cohere_key(), RERANK_MODEL_ID)
+            # Like one API instance: if Cohere keeps failing, the reranker's breaker opens
+            # and those questions are skipped below, as a failed rerank is.
+            breakers = Breakers()
 
             async def probe(q: dict) -> None:
                 async with gate:
                     recalled = await retrieve(
                         pool,
                         embed,
+                        breaker=breakers.embedding,
                         query=q["question"],
                         top_k=MAX_TOP_K,
                         tenant_id=persona.tenant_id,
                         role_level=persona.role_level,
                     )
                     reranked = await rerank_chunks(
-                        reranker, q["question"], recalled.chunks, top_n=CONTEXT_CHUNKS
+                        reranker,
+                        q["question"],
+                        recalled.chunks,
+                        top_n=CONTEXT_CHUNKS,
+                        breaker=breakers.reranker,
                     )
                     if reranked.degraded:
                         print(f"{q['id']}: rerank failed, skipped (not the prompt production saw)")

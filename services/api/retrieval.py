@@ -3,10 +3,11 @@
 One SQL round trip, under the caller's RLS context: dense (pgvector cosine distance) and
 lexical (Postgres full-text) candidates, fused with reciprocal rank fusion (RRF). If the
 query can't be embedded, the lexical branch runs alone and the result says so
-(degraded: ["embedding"]), as SPEC's fallback table says.
+(degraded: ["embedding"]), as SPEC's fallback table says. The same happens without a call
+while the embedding's circuit breaker is open (api/breaker.py).
 
-Spans: retrieve > embed, sql_recall. Attributes are counts, weights and outcomes, never the
-query text or chunk content.
+Spans: retrieve > embed (with breaker.state), sql_recall. Attributes are counts, weights and
+outcomes, never the query text or chunk content.
 """
 
 import asyncio
@@ -20,6 +21,7 @@ import asyncpg
 from botocore.exceptions import BotoCoreError, ClientError
 from opentelemetry import trace
 
+from api.breaker import CircuitBreaker
 from shared.db import rls_transaction
 
 log = logging.getLogger(__name__)
@@ -123,6 +125,7 @@ async def retrieve(
     pool: asyncpg.Pool,
     embed_query: EmbedQuery,
     *,
+    breaker: CircuitBreaker,
     query: str,
     top_k: int,
     tenant_id: UUID,
@@ -138,7 +141,7 @@ async def retrieve(
     with tracer.start_as_current_span("retrieve") as span:
         span.set_attributes({"retrieve.top_k": top_k, "retrieve.lexical_weight": weight})
 
-        embedding = await _embed(embed_query, query)
+        embedding = await _embed(embed_query, query, breaker)
         if embedding is None:
             degraded.append("embedding")
 
@@ -170,14 +173,24 @@ async def retrieve(
     return RetrievalResult(chunks=chunks, lexical_weight=weight, degraded=degraded)
 
 
-async def _embed(embed_query: EmbedQuery, query: str) -> list[float] | None:
+async def _embed(
+    embed_query: EmbedQuery, query: str, breaker: CircuitBreaker
+) -> list[float] | None:
     """The query's embedding, or None if Bedrock failed after its retry (the client's
-    timeouts bound the wait). Any other error is a bug and is raised."""
-    with tracer.start_as_current_span("embed") as span:
+    timeouts bound the wait) or the breaker is open. A Bedrock failure counts toward the
+    breaker once per request, retry included. Any other error is a bug and is raised."""
+    with tracer.start_as_current_span("embed") as span, breaker.attempt() as attempt:
+        span.set_attribute("breaker.state", attempt.state)
+        if not attempt.allowed:
+            span.set_attribute("embed.error", "breaker_open")
+            return None
         try:
             # boto3 blocks, so it runs on a worker thread and the event loop stays free.
-            return await asyncio.to_thread(embed_query, query)
+            embedding = await asyncio.to_thread(embed_query, query)
         except (BotoCoreError, ClientError) as error:
+            attempt.failed()
             log.warning("query embedding failed, lexical-only recall: %s", type(error).__name__)
             span.set_attribute("embed.error", type(error).__name__)
             return None
+        attempt.succeeded()
+        return embedding

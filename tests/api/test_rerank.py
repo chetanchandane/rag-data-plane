@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from api import rerank
+from api.breaker import CircuitBreaker
 from api.rerank import (
     COHERE_RERANK_URL,
     CohereReranker,
@@ -122,7 +123,9 @@ async def test_the_key_never_appears_in_the_error():
 async def test_chunks_come_back_in_rerank_order_with_scores(spans):
     a, b, c = chunk("a"), chunk("b"), chunk("c")
     results = [{"index": 2, "relevance_score": 0.8}, {"index": 0, "relevance_score": 0.4}]
-    reranked = await rerank_chunks(cohere(ok(results)), "q", [a, b, c], top_n=2)
+    reranked = await rerank_chunks(
+        cohere(ok(results)), "q", [a, b, c], top_n=2, breaker=CircuitBreaker("reranker")
+    )
 
     assert [r.chunk for r in reranked.chunks] == [c, a]
     assert [r.rerank_score for r in reranked.chunks] == [0.8, 0.4]
@@ -135,7 +138,9 @@ async def test_chunks_come_back_in_rerank_order_with_scores(spans):
 async def test_a_failed_rerank_keeps_the_rrf_order_and_says_so(spans):
     chunks = [chunk(str(i)) for i in range(8)]
     failing = cohere(lambda request: httpx.Response(503))
-    reranked = await rerank_chunks(failing, "q", chunks, top_n=5)
+    reranked = await rerank_chunks(
+        failing, "q", chunks, top_n=5, breaker=CircuitBreaker("reranker")
+    )
 
     assert [r.chunk for r in reranked.chunks] == chunks[:5]
     assert all(r.rerank_score is None for r in reranked.chunks)
@@ -145,7 +150,9 @@ async def test_a_failed_rerank_keeps_the_rrf_order_and_says_so(spans):
 
 
 async def test_no_reranker_configured_keeps_the_rrf_order():
-    reranked = await rerank_chunks(None, "q", [chunk("a")], top_n=5)
+    reranked = await rerank_chunks(
+        None, "q", [chunk("a")], top_n=5, breaker=CircuitBreaker("reranker")
+    )
     assert reranked.degraded and reranked.top_score is None
 
 
@@ -153,7 +160,9 @@ async def test_nothing_recalled_makes_no_call():
     def fail(request):
         raise AssertionError("called Cohere with no documents")
 
-    reranked = await rerank_chunks(cohere(fail), "q", [], top_n=5)
+    reranked = await rerank_chunks(
+        cohere(fail), "q", [], top_n=5, breaker=CircuitBreaker("reranker")
+    )
     assert reranked.chunks == [] and not reranked.degraded
 
 

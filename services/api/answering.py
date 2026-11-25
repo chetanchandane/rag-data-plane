@@ -8,8 +8,14 @@
 Nothing reaches the caller without passing the citation check. Every failure after recall
 becomes an abstain or a degraded flag, never a 500.
 
+The reranker and the primary each sit behind a circuit breaker (api/breaker.py). While the
+primary's is open, the primary is skipped and the secondary answers, flagged llm_primary as
+after any primary failure. The primary's errors and unusable output count toward it; its
+answers never do, whatever the citation check says (DECISIONS 2026-11-24).
+
 Spans (children of the route's `query` span): rerank, abstain_gate, llm_generate,
-citation_check (llm_generate and citation_check once per attempt, with its role).
+citation_check (llm_generate and citation_check once per attempt, with its role; the
+primary's llm_generate also carries breaker.state).
 Attributes are scores, counts, model ids and outcomes, never the question, the chunks or the
 answer.
 """
@@ -23,6 +29,7 @@ from uuid import UUID
 from botocore.exceptions import BotoCoreError, ClientError
 from opentelemetry import trace
 
+from api.breaker import Breakers, CircuitBreaker
 from api.llm import ANSWER_TOOL_NAME, Generate, Generation, LlmModel, ModelAnswer, cost_usd
 from api.rerank import Reranker, rerank_chunks
 from api.retrieval import RetrievalResult, RetrievedChunk
@@ -151,11 +158,14 @@ async def answer_query(
     reranker: Reranker | None,
     generate: Generate,
     config: AnswerConfig,
+    breakers: Breakers,
 ) -> QueryAnswer:
     """The answer to query from the recalled chunks, which RLS already scoped to the caller."""
     degraded = list(recalled.degraded)
 
-    reranked = await rerank_chunks(reranker, query, recalled.chunks, top_n=config.context_chunks)
+    reranked = await rerank_chunks(
+        reranker, query, recalled.chunks, top_n=config.context_chunks, breaker=breakers.reranker
+    )
     if reranked.degraded:
         degraded.append("reranker")
     top_score = reranked.top_score
@@ -192,7 +202,12 @@ async def answer_query(
             retry = failure == CITATION_CHECK_FAILED
             degraded.append(DEGRADED_CITATION_RETRY if retry else DEGRADED_LLM_PRIMARY)
         with tracer.start_as_current_span("llm_generate") as span:
-            generation, failure_now = await _generate(generate, model, prompt)
+            if role == "primary":
+                generation, failure_now = await _generate_primary(
+                    breakers.llm_primary, generate, model, prompt
+                )
+            else:
+                generation, failure_now = await _generate(generate, model, prompt)
             span.set_attributes(
                 {
                     "llm.role": role,
@@ -244,6 +259,27 @@ def _gate(context: list[RetrievedChunk], top_score: float | None, threshold: flo
     if top_score is not None and top_score < threshold:
         return LOW_RELEVANCE
     return None
+
+
+async def _generate_primary(
+    breaker: CircuitBreaker, generate: Generate, model: LlmModel, prompt: str
+) -> tuple[Generation | None, str | None]:
+    """The primary's attempt, behind its breaker. An error or unusable output is a failure.
+    Any valid answer is a success, even one whose quotes then fail the citation check: that's
+    a quality retry from a healthy model, not an outage (DECISIONS 2026-11-24)."""
+    span = trace.get_current_span()
+    with breaker.attempt() as attempt:
+        span.set_attribute("breaker.state", attempt.state)
+        if not attempt.allowed:
+            # Skipped like an outage: the secondary answers, flagged llm_primary.
+            span.set_attribute("llm.error", "breaker_open")
+            return None, LLM_UNAVAILABLE
+        generation, failure = await _generate(generate, model, prompt)
+        if failure is None:
+            attempt.succeeded()
+        else:
+            attempt.failed()
+        return generation, failure
 
 
 async def _generate(

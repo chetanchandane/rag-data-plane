@@ -16,8 +16,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.answering import AnswerConfig, answer_query
 from api.auth import Claims, get_claims
+from api.breaker import Breakers
 from api.config import Settings
-from api.deps import get_pool, get_settings
+from api.deps import get_breakers, get_pool, get_settings
 from api.llm import PRIMARY_READ_TIMEOUT_S, SECONDARY_READ_TIMEOUT_S, Generate, LlmModel
 from api.rerank import Reranker
 from api.retrieval import MAX_TOP_K, EmbedQuery, retrieve
@@ -93,11 +94,13 @@ async def query_documents(
     embed_query: Annotated[EmbedQuery, Depends(get_embed_query)],
     reranker: Annotated[Reranker | None, Depends(get_reranker)],
     generate: Annotated[Generate, Depends(get_generate)],
+    breakers: Annotated[Breakers, Depends(get_breakers)],
 ) -> QueryResponse:
     with tracer.start_as_current_span("query") as span:
         recalled = await retrieve(
             pool,
             embed_query,
+            breaker=breakers.embedding,
             query=body.query,
             top_k=MAX_TOP_K,
             tenant_id=claims.tenant_id,
@@ -109,6 +112,7 @@ async def query_documents(
             reranker=reranker,
             generate=generate,
             config=answer_config(settings),
+            breakers=breakers,
         )
         span.set_attributes(
             {

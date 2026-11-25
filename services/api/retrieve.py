@@ -14,7 +14,8 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.auth import Claims, get_claims
-from api.deps import get_pool
+from api.breaker import Breakers
+from api.deps import get_breakers, get_pool
 from api.rerank import Reranker, rerank_chunks
 from api.retrieval import MAX_TOP_K, EmbedQuery, retrieve
 
@@ -76,10 +77,12 @@ async def retrieve_chunks(
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
     embed_query: Annotated[EmbedQuery, Depends(get_embed_query)],
     reranker: Annotated[Reranker | None, Depends(get_reranker)],
+    breakers: Annotated[Breakers, Depends(get_breakers)],
 ) -> RetrieveResponse:
     result = await retrieve(
         pool,
         embed_query,
+        breaker=breakers.embedding,
         query=body.query,
         top_k=MAX_TOP_K if body.rerank else body.top_k,
         tenant_id=claims.tenant_id,
@@ -91,7 +94,9 @@ async def retrieve_chunks(
             chunks=chunks, lexical_weight=result.lexical_weight, degraded=result.degraded
         )
 
-    reranked = await rerank_chunks(reranker, body.query, result.chunks, top_n=body.top_k)
+    reranked = await rerank_chunks(
+        reranker, body.query, result.chunks, top_n=body.top_k, breaker=breakers.reranker
+    )
     return RetrieveResponse(
         chunks=[
             ChunkOut(**vars(ranked.chunk), rerank_score=ranked.rerank_score)

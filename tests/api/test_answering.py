@@ -20,6 +20,7 @@ from api.answering import (
     check_citations,
     normalize,
 )
+from api.breaker import Breakers
 from api.llm import Generation, LlmModel, ModelAnswer, ModelCitation
 from api.rerank import RerankError
 from api.retrieval import RetrievalResult, RetrievedChunk
@@ -108,11 +109,24 @@ def server_error() -> ClientError:
     return ClientError({"Error": {"Code": "ServiceUnavailableException"}}, "Converse")
 
 
-async def ask(*chunks, reranker=None, llm=None, query="What does the PEP do?", config=CONFIG, **kw):
+async def ask(
+    *chunks,
+    reranker=None,
+    llm=None,
+    query="What does the PEP do?",
+    config=CONFIG,
+    breakers=None,
+    **kw,
+):
     reranker = FakeReranker() if reranker is None else reranker
     llm = llm or FakeLlm(config)
     result = await answer_query(
-        query, recalled(*chunks, **kw), reranker=reranker, generate=llm, config=config
+        query,
+        recalled(*chunks, **kw),
+        reranker=reranker,
+        generate=llm,
+        config=config,
+        breakers=breakers or Breakers(),
     )
     return result, llm
 
@@ -296,7 +310,9 @@ async def test_without_rerank_scores_the_gate_is_skipped_not_applied_to_rrf_scor
 
 async def test_no_reranker_configured_is_degraded_too():
     llm = FakeLlm()
-    result = await answer_query("q", recalled(PEP), reranker=None, generate=llm, config=CONFIG)
+    result = await answer_query(
+        "q", recalled(PEP), reranker=None, generate=llm, config=CONFIG, breakers=Breakers()
+    )
     assert result.degraded == ["reranker"] and not result.abstained
     assert result.top_rerank_score is None
 
@@ -377,7 +393,12 @@ async def test_an_unknown_model_price_reports_cost_as_unknown():
     llm = FakeLlm()
     llm.outcomes["us.example.new-model"] = GOOD
     result = await answer_query(
-        "q", recalled(PEP), reranker=FakeReranker(), generate=llm, config=unpriced
+        "q",
+        recalled(PEP),
+        reranker=FakeReranker(),
+        generate=llm,
+        config=unpriced,
+        breakers=Breakers(),
     )
     assert result.cost_usd is None and not result.abstained
 

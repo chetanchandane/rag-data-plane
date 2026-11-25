@@ -6,6 +6,7 @@ They live on app.state, so tests can put their own pool, S3 client and settings 
 import asyncpg
 from fastapi import Request
 
+from api.breaker import Breakers
 from api.config import Settings
 
 
@@ -19,3 +20,7 @@ def get_pool(request: Request) -> asyncpg.Pool:
 
 def get_s3(request: Request):
     return request.app.state.s3
+
+
+def get_breakers(request: Request) -> Breakers:
+    return request.app.state.breakers

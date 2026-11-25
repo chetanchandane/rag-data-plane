@@ -7,6 +7,7 @@ import pytest
 from botocore.exceptions import ClientError, ReadTimeoutError
 
 from api import retrieval
+from api.breaker import CircuitBreaker
 from tests.api.apphelpers import build_app, client
 
 
@@ -75,7 +76,7 @@ async def test_bedrock_failures_mean_no_embedding(error):
     def embed(query):
         raise error
 
-    assert await retrieval._embed(embed, "q") is None
+    assert await retrieval._embed(embed, "q", CircuitBreaker("embedding")) is None
 
 
 async def test_other_embedding_errors_are_bugs_and_raised():
@@ -83,7 +84,7 @@ async def test_other_embedding_errors_are_bugs_and_raised():
         raise ValueError("expected 1024 dimensions, got 256")
 
     with pytest.raises(ValueError):
-        await retrieval._embed(embed, "q")
+        await retrieval._embed(embed, "q", CircuitBreaker("embedding"))
 
 
 async def test_top_k_is_bounded_even_without_the_endpoint():
@@ -91,6 +92,7 @@ async def test_top_k_is_bounded_even_without_the_endpoint():
         await retrieval.retrieve(
             UntouchablePool(),
             lambda q: [],
+            breaker=CircuitBreaker("embedding"),
             query="q",
             top_k=31,
             tenant_id=uuid.uuid4(),
