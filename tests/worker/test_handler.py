@@ -6,6 +6,7 @@ Spans go to the in-memory exporter (tests/conftest.py).
 
 import json
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from opentelemetry import trace
@@ -14,6 +15,7 @@ from opentelemetry.trace import StatusCode
 
 from shared.errors import PermanentError
 from shared.jobs import DeleteJob, IngestFileJob
+from tests.emf import dimensions, emitted, metric_names
 from worker import handler as handler_module
 from worker.handler import process_message
 from worker.pipeline import IngestResult
@@ -53,15 +55,16 @@ class FakeDlq:
 
 
 class FakeIngest:
-    def __init__(self, raises: Exception | None = None) -> None:
+    def __init__(self, raises: Exception | None = None, result: IngestResult | None = None) -> None:
         self.jobs: list[IngestFileJob] = []
         self.raises = raises
+        self.result = result or IngestResult(outcome="indexed", chunk_count=3, embedded_now=3)
 
     async def __call__(self, job: IngestFileJob) -> IngestResult:
         self.jobs.append(job)
         if self.raises:
             raise self.raises
-        return IngestResult(outcome="indexed", chunk_count=3, embedded_now=3)
+        return self.result
 
 
 class FakePurge:
@@ -277,3 +280,64 @@ def test_a_transient_error_marks_the_span_and_still_flushes(
     assert span.status.status_code == StatusCode.ERROR
     assert [event.name for event in span.events] == ["exception"]
     assert lambda_handler.flushes == 1
+
+
+# --- ingestion freshness (step 25) -----------------------------------------------------------
+
+
+def uploaded(seconds_ago: float) -> str:
+    """A message whose S3 event (emitted_at) is seconds_ago old."""
+    at = datetime.now(UTC) - timedelta(seconds=seconds_ago)
+    return message(emitted_at=at.isoformat().replace("+00:00", "Z"))
+
+
+async def test_an_indexed_document_emits_its_freshness(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "ragdp-worker")
+    result = IngestResult(outcome="indexed", chunk_count=14, embedded_now=14, pages=12)
+    assert await run(uploaded(42), FakeIngest(result=result), FakeDlq()) == "indexed"
+    [rec] = emitted(capsys)
+    assert metric_names(rec) == {"IngestFreshness"}
+    assert dimensions(rec) == [[]]  # one metric, no dimensions
+    assert 42 <= rec["IngestFreshness"] < 52  # seconds since the upload, at least 42
+    assert rec["_aws"]["CloudWatchMetrics"][0]["Metrics"][0]["Unit"] == "Seconds"
+    assert (rec["pages"], rec["chunks"], rec["job_id"]) == (12, 14, "evt-1")
+
+
+async def test_an_upload_time_without_a_timezone_is_read_as_utc(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "ragdp-worker")
+    at = (datetime.now(UTC) - timedelta(seconds=30)).replace(tzinfo=None)
+    body = message(emitted_at=at.isoformat())  # no Z, no offset
+    result = IngestResult(outcome="indexed", pages=2)
+    assert await run(body, FakeIngest(result=result), FakeDlq()) == "indexed"
+    [rec] = emitted(capsys)
+    assert 30 <= rec["IngestFreshness"] < 40
+
+
+async def test_freshness_includes_exactly_twenty_pages(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "ragdp-worker")
+    result = IngestResult(outcome="indexed", pages=handler_module.FRESHNESS_MAX_PAGES)
+    await run(uploaded(5), FakeIngest(result=result), FakeDlq())
+    assert len(emitted(capsys)) == 1
+
+
+async def test_documents_over_twenty_pages_are_outside_the_slo(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "ragdp-worker")
+    result = IngestResult(outcome="indexed", pages=handler_module.FRESHNESS_MAX_PAGES + 1)
+    assert await run(uploaded(5), FakeIngest(result=result), FakeDlq()) == "indexed"
+    assert emitted(capsys) == []
+
+
+@pytest.mark.parametrize("outcome", ["skipped", "superseded", "deleted"])
+async def test_only_the_delivery_that_indexes_emits_freshness(outcome, monkeypatch, capsys) -> None:
+    # skipped: a duplicate delivery of a version that's already done.
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "ragdp-worker")
+    result = IngestResult(outcome=outcome, pages=3)
+    assert await run(uploaded(5), FakeIngest(result=result), FakeDlq()) == outcome
+    assert emitted(capsys) == []
+
+
+async def test_a_dead_lettered_job_emits_no_freshness(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "ragdp-worker")
+    ingest = FakeIngest(raises=PermanentError("hash_mismatch", "bytes differ"))
+    assert await run(uploaded(5), ingest, FakeDlq()) == "dead_lettered"
+    assert emitted(capsys) == []

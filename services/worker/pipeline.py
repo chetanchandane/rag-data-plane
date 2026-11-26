@@ -28,7 +28,7 @@ from shared.errors import PermanentError
 from shared.jobs import parse_s3_key
 from worker import store
 from worker.chunking import CHUNKER_VERSION, chunk
-from worker.pdf import PARSER_VERSION, parse, verify_hash
+from worker.pdf import PARSER_VERSION, page_count, parse, verify_hash
 
 log = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -45,6 +45,7 @@ class IngestResult:
     outcome: Literal["indexed", "superseded", "skipped", "deleted"]
     chunk_count: int = 0
     embedded_now: int = 0  # chunks embedded in this run (fewer than chunk_count on a resume)
+    pages: int = 0  # the PDF's page count; 0 if this run didn't parse it
     seconds: dict[str, float] = field(default_factory=dict)  # per stage
 
 
@@ -133,12 +134,8 @@ async def _process(
     # Parsing is CPU-bound; a thread keeps the event loop free.
     with _stage(seconds, "parse") as span:
         blocks = await asyncio.to_thread(parse, data)
-        span.set_attributes(
-            {
-                "ingest.pages": max((b.page for b in blocks), default=0),
-                "ingest.blocks": len(blocks),
-            }
-        )
+        pages = page_count(data)
+        span.set_attributes({"ingest.pages": pages, "ingest.blocks": len(blocks)})
 
     with _stage(seconds, "chunk") as span:
         chunks = chunk(blocks)
@@ -183,6 +180,7 @@ async def _process(
         outcome=outcomes[activation],
         chunk_count=len(chunks),
         embedded_now=len(missing),
+        pages=pages,
         seconds=seconds,
     )
 

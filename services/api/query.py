@@ -102,6 +102,7 @@ def answer_config(settings: Settings) -> AnswerConfig:
 
 @router.post("/v1/query")
 async def query_documents(
+    request: Request,
     body: QueryRequest,
     claims: Annotated[Claims, Depends(get_claims)],
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
@@ -128,6 +129,7 @@ async def query_documents(
             hit = _from_cache(lookup.response, trace_id) if lookup.response else None
             span.set_attribute("cache.hit", hit is not None)
             if hit is not None:
+                _for_metrics(request, hit)
                 return hit
 
         recalled = await retrieve(
@@ -161,7 +163,14 @@ async def query_documents(
             # lookup.key, not a new key: it holds the epoch read before recall (api/cache.py).
             stored = response.model_dump(mode="json", exclude=_PER_REQUEST_FIELDS)
             await cache.store(pool, claims.tenant_id, claims.role_level, lookup.key, stored)
+    _for_metrics(request, response)
     return response
+
+
+def _for_metrics(request: Request, response: QueryResponse) -> None:
+    """What the request's metrics need from the body (api/request_metrics.py)."""
+    request.state.degraded = response.degraded
+    request.state.cached = response.cached
 
 
 def _response(result: QueryAnswer, trace_id: str) -> QueryResponse:

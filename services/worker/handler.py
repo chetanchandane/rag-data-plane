@@ -22,6 +22,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import boto3
@@ -29,6 +30,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import ValidationError
 
+from shared import metrics
 from shared.db import create_pool
 from shared.embedding import embed_batch, make_bedrock_client
 from shared.errors import MAX_REASON_LENGTH, PermanentError
@@ -42,6 +44,8 @@ logging.getLogger().setLevel(logging.INFO)  # Lambda's root logger defaults to W
 tracer = trace.get_tracer(__name__)
 
 SERVICE_NAME = "ragdp-worker"  # also the Honeycomb dataset
+# SPEC's freshness SLO: 95% of documents up to 20 pages indexed within 2 minutes of upload.
+FRESHNESS_MAX_PAGES = 20
 
 RunIngest = Callable[[IngestFileJob], Awaitable[IngestResult]]
 RunPurge = Callable[[DeleteJob], Awaitable[PurgeResult]]
@@ -92,7 +96,32 @@ async def process_message(
         return await _dead_letter(send_to_dlq, body, exc.reason, job_id=job.job_id)
 
     log.info("job %s: %s, %d chunks", job.job_id, result.outcome, result.chunk_count)
+    if result.outcome == "indexed":
+        _emit_freshness(job, result)
     return result.outcome
+
+
+def _emit_freshness(job: IngestFileJob, result: IngestResult) -> None:
+    """Seconds from the upload to `indexed` (step 25). emitted_at is the S3 event's time,
+    when the object was written. Only for the delivery that activated the version: a
+    duplicate ends `skipped` and sends nothing. A retry's time includes the failed
+    attempts, which is what the uploader waited through."""
+    uploaded_at = job.emitted_at
+    if uploaded_at.tzinfo is None:  # EventBridge sends UTC with a Z; never crash on its absence
+        uploaded_at = uploaded_at.replace(tzinfo=UTC)
+    seconds = (datetime.now(UTC) - uploaded_at).total_seconds()
+    log.info("job %s: indexed %.1f s after upload, %d pages", job.job_id, seconds, result.pages)
+    if result.pages > FRESHNESS_MAX_PAGES:
+        return  # outside the SLO's population: the log line above still has it
+    metrics.emit(
+        {"IngestFreshness": (seconds, metrics.SECONDS)},
+        properties={
+            "job_id": job.job_id,
+            "pages": result.pages,
+            "chunks": result.chunk_count,
+            "embedded_now": result.embedded_now,
+        },
+    )
 
 
 async def _dead_letter(

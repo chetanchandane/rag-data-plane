@@ -19,7 +19,7 @@ from botocore.config import Config
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from api import documents, query, retrieve, whoami
+from api import documents, query, request_metrics, retrieve, whoami
 from api.breaker import Breakers
 from api.config import RETRY_AFTER_SECONDS, Settings
 from api.llm import llm_generate
@@ -120,6 +120,8 @@ def create_app() -> FastAPI:
     # Built with the app, not in open_resources: one set per container (on Lambda, per
     # instance, as SPEC says), and an app built for a test gets fresh, closed breakers.
     app.state.breakers = Breakers()
+    # One EMF line per request: latency, faults, degraded and cache hits (step 25).
+    app.middleware("http")(request_metrics.record_request)
     app.include_router(documents.router)
     app.include_router(retrieve.router)
     app.include_router(query.router)

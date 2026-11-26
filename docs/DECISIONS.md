@@ -2,6 +2,48 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-25: Step 25, metrics for the SLOs
+
+- **8 custom metrics** (Chetan, 2026-11-25), in namespace `ragdp`, by `Route` (`retrieve`, `query` or `other`). Each metric name with each set of dimension values is one billed metric, about $0.30 a month for every month it's sent, prorated by the hour:
+
+  | Metric | Values | Routes | Answers |
+  | --- | --- | --- | --- |
+  | `Latency` | ms, 2xx only; for query, not cached | retrieve, query | p50, p95, p99 per SLO route |
+  | `Fault` | 1 if 5xx, else 0 | retrieve, query, other | Average = error rate, SampleCount = requests |
+  | `Degraded` | 0/1, 2xx and not cached | query | how often a fallback ran |
+  | `CacheHit` | 0/1, every 2xx | query | cache hit rate |
+  | `IngestFreshness` | seconds, no dimensions | (worker) | upload to `indexed`, documents up to 20 pages |
+
+  - **Rejected:** a ninth metric, `Degraded` for `/v1/retrieve`, to keep to the planned "about 8". Its `degraded` list is still on every line as a property: free, and queryable in Logs Insights.
+  - **One 0/1 `Fault` metric instead of request and error counts:** its SampleCount is the request count and its Average the error rate, so availability takes one metric per route instead of two.
+  - **`Latency` counts only 2xx responses.** A fast 4xx would pull p95 down and hide slow answers, and failures are counted by `Fault`.
+  - **For `/v1/query`, `Latency` and `Degraded` count only answers not served from the cache** (review finding). A hit takes milliseconds and is never degraded, since only validated, non-degraded answers are stored. At `query_mix`'s 70% repeats, hits would keep p95 under 8 s while uncached answers broke it. `CacheHit` counts every 2xx, so the hit rate stays honest. Client-side end-to-end latency, hits included, is step 26's k6 number.
+- **Hand-written EMF** (`services/shared/metrics.py`), printed to stdout. Both functions log in Text format, so the line reaches CloudWatch Logs unchanged, and CloudWatch extracts the metrics from it. No API call in the request path, no IAM permission, no dependency.
+  - **`emit()` prints only on Lambda** (when `AWS_LAMBDA_FUNCTION_NAME` is set), so local runs and tests stay quiet. Tests set the variable to capture the lines.
+  - **`tests/emf.py` checks every captured line against the spec rules CloudWatch enforces.** A malformed line fails a test instead of being dropped silently. An empty dimension set is allowed by the spec ("A DimensionSet MAY be empty"), which `IngestFreshness` uses.
+  - **Rejected:**
+    - `aws-embedded-metrics` and Powertools Metrics: new dependencies that do far more than one line per request needs;
+    - `PutMetricData`: a network call in every request, plus a new IAM permission.
+- **API: one HTTP middleware** (`api/request_metrics.py`). The routes put `degraded` and `cached` on `request.state`, because middleware can't read the response body. An exception that escapes the app counts as a 500, then is raised again. Properties are the method, the status, the latency and the route template (`/v1/documents/{doc_id}`, never the path, so no ids end up in metrics).
+  - **`Route` comes from the matched template,** not the raw path, so a prefix or a trailing slash can't move an SLO route into `other` (review finding).
+  - **Metrics are best effort:** `emit()` logs and drops a line it can't build or print. A metrics bug must never turn a 200 into a 500, or an indexed document into an SQS retry (review finding).
+- **Worker: `IngestFreshness` = now minus `job.emitted_at`** (the S3 event's `time`, when the object was written), sent only by the delivery whose outcome is `indexed`.
+  - A duplicate (`skipped`), a `superseded` or `deleted` outcome, and a dead-lettered job send nothing.
+  - A retry's time includes its failed attempts, which is what the uploader waited through.
+  - **Only documents of 20 pages or fewer** (Chetan, 2026-11-25): the SLO's population. Every indexed document's time and page count is still in the worker's log line.
+  - **Pages = the PDF's page count** (`worker.pdf.page_count`, in `IngestResult.pages`), blank and image-only pages included (review finding). The last page with text would put a 60-page PDF with a scanned appendix inside the 20-page group.
+  - **An `emitted_at` without a timezone is read as UTC.** The job model accepts one, and EventBridge's `time` is always UTC. Subtracting it as is would raise after the version was activated, so SQS would retry, the retry would end `skipped`, and the metric would never be sent (review finding).
+- **What these metrics can't see:**
+  - an invocation that crashes or times out prints nothing (AWS: "If your function times out before it flushes its metrics, CloudWatch Logs does not capture the metrics");
+  - a throttled 429 never reaches Lambda;
+  - a container's cold start: `open_resources` (SSM, the pool's first connect, which can wait for Neon to wake) runs before Mangum, so it isn't in `Latency`, and a cold start that fails sends no `Fault` (review finding).
+
+  So step 27's availability must also use API Gateway's free stage metrics (`5xx`, `4xx`, `Count`), and its latency picture Lambda's `Duration` and `InitDuration`. These latencies are measured inside the Lambda, without the client's internet hop that step 26's k6 numbers include.
+- **Review findings rejected (2026-11-25), each checked against the code:**
+  - "Use a raw ASGI middleware, `BaseHTTPMiddleware` is slow and stops the timer at headers": its overhead is well under 1 ms against a 400 ms target, and these JSON responses are sent in one body, so "headers ready" is "sent". A raw ASGI wrapper is more code to explain for no measurable gain.
+  - "Routes must set `request.state` on every return path by hand": both paths in each route are covered by tests (hit, miss; reranked, not). The alternative, a response header for the middleware, exposes internals to clients.
+  - "A DLQ redrive hours later is recorded as hours of freshness": that's correct. The document really couldn't be found for those hours after its upload, which is what the SLO measures.
+
 ## 2026-11-25: Step 24, load-test prerequisites
 
 - **Lambda concurrency quota: 1000 requested** (Chetan filed it, 2026-11-25). The account had 10.

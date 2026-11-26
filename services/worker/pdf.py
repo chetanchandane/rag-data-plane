@@ -92,6 +92,13 @@ def verify_hash(data: bytes, expected_sha256: str) -> None:
         raise PermanentError("sha256_mismatch", "file hash differs from the registered hash")
 
 
+def page_count(data: bytes) -> int:
+    """The PDF's pages, blank or image-only ones too: its size for the freshness SLO (step 25).
+    Only called after parse() succeeded, so the bytes open. Opening reads no page content."""
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        return doc.page_count
+
+
 def parse(data: bytes) -> list[Block]:
     """Parse PDF bytes into Blocks. Raises PermanentError if the PDF can't be used."""
     try:

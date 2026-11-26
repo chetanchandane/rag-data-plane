@@ -72,6 +72,7 @@ def get_reranker(request: Request) -> Reranker | None:
 
 @router.post("/v1/retrieve")
 async def retrieve_chunks(
+    request: Request,
     body: RetrieveRequest,
     claims: Annotated[Claims, Depends(get_claims)],
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
@@ -89,6 +90,7 @@ async def retrieve_chunks(
         role_level=claims.role_level,
     )
     if not body.rerank:
+        request.state.degraded = result.degraded  # for the request's metrics
         chunks = [ChunkOut(**vars(chunk)) for chunk in result.chunks]
         return RetrieveResponse(
             chunks=chunks, lexical_weight=result.lexical_weight, degraded=result.degraded
@@ -97,11 +99,13 @@ async def retrieve_chunks(
     reranked = await rerank_chunks(
         reranker, body.query, result.chunks, top_n=body.top_k, breaker=breakers.reranker
     )
+    degraded = result.degraded + (["reranker"] if reranked.degraded else [])
+    request.state.degraded = degraded
     return RetrieveResponse(
         chunks=[
             ChunkOut(**vars(ranked.chunk), rerank_score=ranked.rerank_score)
             for ranked in reranked.chunks
         ],
         lexical_weight=result.lexical_weight,
-        degraded=result.degraded + (["reranker"] if reranked.degraded else []),
+        degraded=degraded,
     )

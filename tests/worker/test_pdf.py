@@ -7,7 +7,7 @@ import pytest
 from shared.errors import PermanentError
 from tests.worker.pdfgen import Page, make_pdf
 from worker.chunking import chunk
-from worker.pdf import FOOTNOTES_PATH, parse, verify_hash
+from worker.pdf import FOOTNOTES_PATH, page_count, parse, verify_hash
 
 # --- verify_hash ---------------------------------------------------------------------------
 
@@ -251,3 +251,11 @@ def test_text_under_a_new_heading_is_not_joined_to_the_previous_page() -> None:
         "a paragraph that stops here",
         "continued text in a new section.",
     ]
+
+
+def test_page_count_includes_pages_without_text() -> None:
+    # The freshness SLO is by document size (step 25): blank or scanned pages count too,
+    # though parse() returns no blocks for them.
+    data = make_pdf([Page(paragraphs=["Only the first page has text."]), Page(), Page()])
+    assert max(b.page for b in parse(data)) == 1
+    assert page_count(data) == 3
