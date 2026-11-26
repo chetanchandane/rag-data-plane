@@ -71,6 +71,8 @@ uv run pytest -m leak                  # leak matrix on the Neon eval branch (EV
 PYTHONPATH=services uv run python scripts/eval_embeddings.py   # re-embed the questions after editing any (Titan, < $0.001)
 uv run pytest -m paid tests/leak/test_query_leaks_paid.py -s  # sampled /v1/query leak check (about $0.35)
 uv run pytest -m eval -s               # step 18 eval run + quality gate (about $1; EVAL_LIMIT=3 for a cents smoke test)
+PYTHONPATH=services uv run python scripts/loadtest.py ingest --api-url "$API_URL"   # load-test tenant's corpus in production (Titan, about $0.02)
+TOKEN=$(PYTHONPATH=services uv run python scripts/loadtest.py token) k6 run -e API_URL="$API_URL" load/smoke.js   # 10-request smoke run (docs/runbooks/load-test.md)
 terraform -chdir=infra/envs/prod fmt -recursive && terraform -chdir=infra/envs/prod validate
 ```
 
@@ -184,7 +186,7 @@ Not scheduled (decide when they come up): footnote-aware PDF parsing (DECISIONS 
 
 Same rules as before (DECISIONS 2026-11-25, "Slice 4 step list"). SLO targets come from the load test, so the dashboard and alarms follow it. Paid runs and anything that changes AWS need Chetan's go-ahead in that session, with the expected cost.
 
-- [ ] **24. Load-test prerequisites.** Chetan requests a higher Lambda "Concurrent executions" quota in Service Quotas (the account limit is 10). A `loadtest` tenant in production gets the 12 FDA guidances through the real ingest path (Titan, about $0.02). k6 is installed (`brew install k6`). The stage throttle becomes a Terraform variable, so it can be raised for the load window only (25 requests/s, burst 50) and put back.
+- [x] **24. Load-test prerequisites.** Chetan requests a higher Lambda "Concurrent executions" quota in Service Quotas (the account limit is 10). A `loadtest` tenant in production gets the 12 FDA guidances through the real ingest path (Titan, about $0.02). k6 is installed (`brew install k6`). The stage throttle becomes a Terraform variable, so it can be raised for the load window only (25 requests/s, burst 50) and put back.
   *Done when:* the quota is raised, the corpus is `indexed`, and a 10-request k6 smoke run against the deployed `/v1/retrieve` returns 200s.
 - [ ] **25. Metrics for the SLOs.** CloudWatch EMF from both Lambdas. The API: latency by route, status class, `degraded` and cache hit. The worker: seconds from upload to `indexed` (ingestion freshness). Keep it to about 8 custom metrics (about $2 a month).
   *Done when:* unit tests check the emitted EMF shape, and after a deploy the metrics show up in CloudWatch.

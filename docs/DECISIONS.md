@@ -2,6 +2,30 @@
 
 Changes to `docs/SPEC.md` that were agreed after it was written. Newest first. Format: date, decision, why.
 
+## 2026-11-25: Step 24, load-test prerequisites
+
+- **Lambda concurrency quota: 1000 requested** (Chetan filed it, 2026-11-25). The account had 10.
+  - **Proposed instead:** 100. That's about 4x the expected peak (the ramp's 20 requests/s × about 0.4 s, `query_mix`'s 2/s × about 8 s, the worker's 2), and it would have kept a ceiling on a runaway. Chetan chose 1000, AWS's usual default.
+  - **Cost stays capped** by the stage throttle (10/20 outside the load window), the worker's `maximum_concurrency` of 2 and the Budget alerts. The quota was never the cost control.
+- **The throttle is two variables in `infra/envs/prod`,** `api_throttle_rate_limit` and `api_throttle_burst_limit`, with **defaults** 10 and 20, passed to `modules/api`'s existing variables.
+  - **Why defaults, not `prod.tfvars`:** `deploy.yml` passes neither, so every push to `main` puts the throttle back to 10/20. If the raised values are left in place after the load window, the next deploy lowers them again. The load window raises them with `-var` from the laptop (`docs/runbooks/load-test.md`).
+  - **Checked:** `plan` with the deployed tag shows no changes. With `-var 25/50`, it updates one resource in place, the API stage.
+  - **Rejected:** a value in `prod.tfvars`. Raising the throttle would then mean editing a committed file, and a forgotten raise would ship with every deploy.
+  - **Validation:** the rate must be above 0 (0 rejects every request), and the burst must be at least the rate. The second rule catches a forgotten `-var` for one of the pair: `-var api_throttle_rate_limit=25` alone fails at `plan`, as checked.
+- **A fixed `loadtest` tenant** (`c98bf2d7-…`, in `scripts/loadtest.py`). It holds the 12 FDA guidances from `eval/golden/corpus.json`, each at level 1, ingested through the deployed API, S3 and worker.
+  - **Why the eval corpus:** the golden questions are about these documents, so the load tests send realistic queries that actually find chunks, with no new question set.
+  - **The tokens are level 1,** since every document is. `token` gives `retrieve` and `query` scopes only. `ingest` gives `documents:read` and `documents:write` only.
+  - **Idempotent:** the external ids are the corpus ids. A rerun registers duplicates (no upload) and reports their status.
+  - **Refuses a changed PDF:** the bytes must match the manifest's SHA-256, so the load tenant always holds what the eval measured.
+- **`scripts/deployed_api.py`:** `chaos.py`'s API client (`Api`, `upload`, `watch`), moved there so `loadtest.py` doesn't copy it. Two changes:
+  - the subject, scopes and role level are parameters;
+  - the token is minted again once it's 10 minutes old. Watching 12 ingests can take longer than a token's 15 minutes, and `watch` raises on a 401.
+- **A `failed` document can't be fixed by a rerun.** The same bytes return the same version, and a deleted document's external id is refused (409). The script and runbook say so: fix the cause, then use a new `LOADTEST_TENANT`. Not worth building around for a one-off load corpus.
+- **`load/smoke.js`:** 10 `/v1/retrieve` requests, one at a time, with the golden questions (read from `eval/golden/questions.jsonl`, not copied). `rerank: false`, so no Cohere calls. k6 exits non-zero unless every request returns 200 with chunks and no `degraded`.
+- **Review findings rejected (2026-11-25), each checked against the code:**
+  - "A throwing k6 check is dropped, so `rate==1` can pass": not in k6 2.4. A check whose callback throws counts as failed, the threshold fails, and k6 exits 99 (tried offline).
+  - "`register` and `upload` don't retry transient errors": a rerun is the retry. Registering again returns a fresh upload URL while the version is `pending_upload`, and already-uploaded documents are only watched.
+
 ## 2026-11-25: Slice 4 step list
 
 - **Steps 24 to 29** (Chetan, 2026-11-25), in CLAUDE.md: load-test prerequisites, metrics for the SLOs, the k6 load tests, the SLO dashboard and alarms, a scale probe, and the "At 100x" note with the README.

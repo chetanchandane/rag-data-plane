@@ -20,7 +20,6 @@ Costs: Titan embeddings for what's ingested (a 300-chunk PDF is under $0.01).
 
 import argparse
 import asyncio
-import hashlib
 import json
 import os
 import random
@@ -32,20 +31,16 @@ from pathlib import Path
 from typing import Any
 
 import boto3
-import httpx
-import issuer  # scripts/issuer.py: the signing key in SSM
 import pymupdf
+from deployed_api import Api, upload, watch
 from dotenv import load_dotenv
 
-from shared import tokens
 from shared.db import create_pool, rls_transaction
 from shared.jobs import IngestFileJob
 
 DATABASE_URL_INGEST_PARAM = "/ragdp/prod/database_url_ingest"
 WORKER_LOG_GROUP = "/aws/lambda/ragdp-worker"
 SCOPES = ("documents:read", "documents:write")
-TERMINAL = {"indexed", "failed", "superseded"}
-POLL_SECONDS = 1.0
 
 # Words for the synthetic PDF. Seeded, so the same --pages gives the same bytes every time,
 # and every paragraph carries its own numbers, so no two chunks have the same text.
@@ -78,101 +73,7 @@ def make_pdf(pages: int) -> bytes:
     return doc.tobytes(no_new_id=True)  # no random trailer ID: same --pages, same bytes
 
 
-# --- API ----------------------------------------------------------------------------------
-
-
-class Api:
-    def __init__(self, url: str, tenant: uuid.UUID) -> None:
-        issuer_url = os.environ.get("JWT_ISSUER", "").strip()
-        if not issuer_url:
-            sys.exit("chaos.py: JWT_ISSUER is not set (.env)")
-        ssm = boto3.client("ssm")
-        token = tokens.mint(
-            issuer.load_signing_key(ssm),
-            issuer=issuer_url,
-            tenant_id=tenant,
-            role_level=3,
-            subject="chaos",
-            scopes=SCOPES,
-        )
-        self.http = httpx.Client(
-            base_url=url, headers={"Authorization": f"Bearer {token}"}, timeout=30
-        )
-
-    def register(self, data: bytes, external_id: str, filename: str) -> dict[str, Any]:
-        body = {
-            "external_id": external_id,
-            "filename": filename,
-            "content_sha256": hashlib.sha256(data).hexdigest(),
-            "size_bytes": len(data),
-            "min_role_level": 1,
-        }
-        resp = self.http.post("/v1/documents", json=body)
-        resp.raise_for_status()
-        return resp.json()
-
-    def document(self, doc_id: str) -> dict[str, Any]:
-        resp = self.http.get(f"/v1/documents/{doc_id}")
-        resp.raise_for_status()
-        return resp.json()
-
-    def delete(self, doc_id: str) -> int:
-        return self.http.delete(f"/v1/documents/{doc_id}").status_code
-
-
-def upload(registered: dict[str, Any], data: bytes) -> float:
-    """PUT to the presigned URL; returns the time the upload finished (epoch seconds)."""
-    up = registered["upload"]
-    if up is None:
-        sys.exit(f"chaos.py: version {registered['version']} needs no upload (duplicate?)")
-    resp = httpx.put(up["url"], content=data, headers=up["headers"], timeout=60)
-    resp.raise_for_status()
-    return time.time()
-
-
-def watch(
-    api: Api, doc_id: str, version: int, uploaded_at: float, limit_s: float
-) -> dict[str, Any]:
-    """Poll the version once a second until it's terminal or limit_s passes. Returns when
-    each status was first seen, in seconds after the upload. A 429, a 5xx or a network
-    error on one poll (a cold start, a throttle) is counted and polled again, so it can't
-    end a run; anything else (a 401 from an expired token) raises."""
-    seen: dict[str, float] = {}
-    deadline = uploaded_at + limit_s
-    status = "?"
-    transient_errors = 0
-    while time.time() < deadline:
-        try:
-            document = api.document(doc_id)
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code != 429 and error.response.status_code < 500:
-                raise
-            transient_errors += 1
-            time.sleep(POLL_SECONDS)
-            continue
-        except httpx.TransportError:
-            transient_errors += 1
-            time.sleep(POLL_SECONDS)
-            continue
-        versions = {v["version"]: v for v in document["versions"]}
-        current = versions[version]
-        status = current["status"]
-        seen.setdefault(status, round(time.time() - uploaded_at, 1))
-        if status in TERMINAL:
-            return {
-                "status": status,
-                "seen_at_s": seen,
-                "version": current,
-                "transient_errors": transient_errors,
-            }
-        time.sleep(POLL_SECONDS)
-    return {
-        "status": status,
-        "seen_at_s": seen,
-        "version": None,
-        "timed_out": True,
-        "transient_errors": transient_errors,
-    }
+# --- worker logs -------------------------------------------------------------------------
 
 
 def worker_log_line(job_id: str, since_ms: int, limit_s: float) -> str | None:
@@ -343,7 +244,7 @@ def main() -> None:
         # Only these talk to the API, so only they mint a token (from the SSM signing key).
         if not args.api_url:
             sys.exit("chaos.py: --api-url (or CHAOS_API_URL) is required")
-        api = Api(args.api_url, args.tenant)
+        api = Api(args.api_url, args.tenant, subject="chaos", scopes=SCOPES)
         commands = {"ingest": cmd_ingest, "out-of-order": cmd_out_of_order, "delete": cmd_delete}
         result = commands[args.command](args, api)
     print(json.dumps(result, indent=1, default=str))

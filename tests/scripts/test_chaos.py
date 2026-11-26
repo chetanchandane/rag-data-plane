@@ -9,13 +9,14 @@ from tests.leak.matrix import load_script
 from worker.chunking import chunk
 from worker.pdf import parse
 
-# chaos.py does `import issuer`, which works when it runs from scripts/. Registered only while
-# chaos.py loads, so nothing else in the session picks up this copy.
+# chaos.py imports deployed_api, which imports issuer: both work when it runs from scripts/.
+# Registered only while chaos.py loads, so nothing else in the session picks up these copies.
 sys.modules["issuer"] = load_script("issuer")
+sys.modules["deployed_api"] = load_script("deployed_api")
 try:
     chaos = load_script("chaos")
 finally:
-    del sys.modules["issuer"]
+    del sys.modules["deployed_api"], sys.modules["issuer"]
 
 
 def test_the_synthetic_pdf_is_deterministic():

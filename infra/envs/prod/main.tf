@@ -99,6 +99,8 @@ module "api" {
   workload_role_path        = local.workload_role_path
   workload_boundary_arn     = local.workload_boundary_arn
   log_retention_days        = 14
+  throttling_rate_limit     = var.api_throttle_rate_limit
+  throttling_burst_limit    = var.api_throttle_burst_limit
 }
 
 module "observability" {
